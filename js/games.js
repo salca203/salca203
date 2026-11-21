@@ -1,129 +1,7 @@
 // ==========================================
-// SPIELEZIMMER – OPTIMIERTER KERNCODE & BAUSTEINE
+// SPIELEZIMMER – SHARED BAUSTEINE & SPIELE
 // ==========================================
 
-const SZ_STORAGE_KEY = 'sz_platform_v1';
-
-const SZ_DEFAULT_STATE = {
-  muted: false,
-  colorblind: 'off', // 'off' | 'rg' | 'by'
-  lastPlayedId: null,
-  favorites: [],
-  sortMode: 'default',
-  records: {}
-};
-
-function readSzState() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(SZ_STORAGE_KEY) || 'null');
-    if (!raw || typeof raw !== 'object') {
-      return JSON.parse(JSON.stringify(SZ_DEFAULT_STATE));
-    }
-    return {
-      muted: Boolean(raw.muted),
-      colorblind: ['off', 'rg', 'by'].includes(raw.colorblind) ? raw.colorblind : 'off',
-      lastPlayedId: typeof raw.lastPlayedId === 'string' ? raw.lastPlayedId : null,
-      favorites: Array.isArray(raw.favorites)
-        ? [...new Set(raw.favorites.filter((x) => typeof x === 'string'))]
-        : [],
-      sortMode: ['default', 'favorites', 'record', 'title'].includes(raw.sortMode)
-        ? raw.sortMode
-        : 'default',
-      records: raw.records && typeof raw.records === 'object' ? raw.records : {}
-    };
-  } catch {
-    return JSON.parse(JSON.stringify(SZ_DEFAULT_STATE));
-  }
-}
-
-let szState = readSzState();
-
-function writeSzState() {
-  try {
-    localStorage.setItem(SZ_STORAGE_KEY, JSON.stringify(szState));
-  } catch {}
-}
-
-function applyColorBlindMode(mode = szState.colorblind) {
-  const safe = ['off', 'rg', 'by'].includes(mode) ? mode : 'off';
-  szState.colorblind = safe;
-  writeSzState();
-
-  if (typeof document !== 'undefined' && document.documentElement) {
-    if (safe === 'off') {
-      document.documentElement.removeAttribute('data-colorblind');
-    } else {
-      document.documentElement.setAttribute('data-colorblind', safe);
-    }
-  }
-  return safe;
-}
-
-applyColorBlindMode(szState.colorblind);
-
-// --- Web-Audio-Engine ---
-let szAudioCtx = null;
-
-function ensureAudioCtx() {
-  if (szState.muted) return null;
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return null;
-  if (!szAudioCtx) szAudioCtx = new Ctx();
-  if (szAudioCtx.state === 'suspended') szAudioCtx.resume().catch(() => {});
-  return szAudioCtx;
-}
-
-function playTone({ freq = 440, endFreq = null, duration = 0.08, type = 'sine', volume = 0.07, delay = 0 }) {
-  if (szState.muted) return;
-  const ctx = ensureAudioCtx();
-  if (!ctx) return;
-
-  const now = ctx.currentTime + delay;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, now);
-  if (endFreq !== null) {
-    osc.frequency.exponentialRampToValueAtTime(Math.max(40, endFreq), now + duration);
-  }
-
-  gain.gain.setValueAtTime(0.0001, now);
-  gain.gain.linearRampToValueAtTime(volume, now + Math.min(0.015, duration * 0.25));
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(now);
-  osc.stop(now + duration + 0.02);
-}
-
-const szSfx = {
-  click: () => playTone({ freq: 520, endFreq: 380, duration: 0.045, type: 'triangle', volume: 0.05 }),
-  hit: (streak = 0) => {
-    const boost = Math.min(260, Math.max(0, streak) * 22);
-    playTone({ freq: 440 + boost, endFreq: 660 + boost, duration: 0.09, type: 'sine', volume: 0.075 });
-  },
-  miss: () => playTone({ freq: 210, endFreq: 125, duration: 0.14, type: 'sawtooth', volume: 0.05 }),
-  tick: (urgent = false) => playTone({
-    freq: urgent ? 880 : 620,
-    endFreq: urgent ? 880 : 620,
-    duration: 0.04,
-    type: 'sine',
-    volume: urgent ? 0.06 : 0.03
-  }),
-  record: () => {
-    [523.25, 659.25, 783.99, 1046.5].forEach((n, i) => {
-      playTone({ freq: n, endFreq: n * 1.02, duration: 0.13, type: 'triangle', volume: 0.075, delay: i * 0.075 });
-    });
-  },
-  gameover: () => {
-    playTone({ freq: 392, endFreq: 293.66, duration: 0.16, type: 'sine', volume: 0.055, delay: 0 });
-    playTone({ freq: 293.66, endFreq: 220, duration: 0.22, type: 'sine', volume: 0.055, delay: 0.13 });
-  }
-};
-
-// --- UI-Helfer (A11y, Popups, Farbenblind-Marker, Profil-Schalter) ---
 function prefersReducedMotion() {
   try {
     return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -134,7 +12,7 @@ function prefersReducedMotion() {
 
 function pulseSafe(el, type = 'pop') {
   if (!el || prefersReducedMotion()) return;
-  if (typeof pulseEl === 'function') pulseEl(el, type);
+  pulseEl(el, type);
 }
 
 function spawnScorePopup(anchorEl, text, { hot = false, rt = null } = {}) {
@@ -230,38 +108,6 @@ function createLearnBar({ onTip, initialText = 'Bereit – nutze bei Bedarf eine
   };
 }
 
-// --- Rekorde & Fortschritt ---
-function getGameRecord(gameId, profileKey) {
-  const entry = szState.records?.[gameId]?.[profileKey];
-  return entry && typeof entry === 'object' ? { ...entry } : { best: 0, bestMoves: null, played: false };
-}
-
-function saveGameRecord(gameId, profileKey, patch) {
-  if (!szState.records[gameId]) szState.records[gameId] = {};
-  const prev = getGameRecord(gameId, profileKey);
-  szState.records[gameId][profileKey] = { ...prev, ...patch, played: true };
-  writeSzState();
-  return szState.records[gameId][profileKey];
-}
-
-function getBestScoreForGame(gameId) {
-  const map = szState.records?.[gameId];
-  if (!map || typeof map !== 'object') return { best: 0, bestMoves: null, played: false };
-  let best = 0;
-  let bestMoves = null;
-  let played = false;
-  for (const rec of Object.values(map)) {
-    if (!rec || typeof rec !== 'object') continue;
-    if (rec.played || rec.best > 0 || typeof rec.bestMoves === 'number') played = true;
-    if (typeof rec.best === 'number' && rec.best > best) best = rec.best;
-    if (typeof rec.bestMoves === 'number') {
-      bestMoves = bestMoves === null ? rec.bestMoves : Math.min(bestMoves, rec.bestMoves);
-    }
-  }
-  return { best, bestMoves, played };
-}
-
-// --- Gemeinsamer Runden-Runner ---
 const SZ_DIFFS = {
   easy:   { id: 'easy',   label: 'Entspannt', timeFactor: 1.2,  rangeFactor: 0.75, scoreMult: 0.85 },
   normal: { id: 'normal', label: 'Standard',  timeFactor: 1.0,  rangeFactor: 1.0,  scoreMult: 1.0  },
@@ -586,14 +432,12 @@ function createRoundRunner({
   };
 }
 
-// --- Aufgaben-Generator & Spiel: Potenz-Knacker ---
 function buildPowerTaskWithDepth({ streak = 0, rangeFactor = 1.0 }) {
-  const rand = (n) => (typeof R === 'function' ? R(n) : Math.floor(Math.random() * n));
-  const useCube = streak >= 2 && rand(100) < (streak >= 4 ? 42 : 25);
+  const useCube = streak >= 2 && R(100) < (streak >= 4 ? 42 : 25);
   const maxSq = Math.max(8, Math.min(15, Math.round(12 * rangeFactor)));
   const maxCb = Math.max(4, Math.min(7, Math.round(5 * rangeFactor)));
 
-  const base = useCube ? (2 + rand(Math.max(2, maxCb - 1))) : (2 + rand(Math.max(3, maxSq - 1)));
+  const base = useCube ? (2 + R(Math.max(2, maxCb - 1))) : (2 + R(Math.max(3, maxSq - 1)));
   const exp = useCube ? 3 : 2;
   const answer = Math.pow(base, exp);
   const label = useCube ? `${base}³ = ?` : `${base}² = ?`;
@@ -612,7 +456,7 @@ function buildPowerTaskWithDepth({ streak = 0, rangeFactor = 1.0 }) {
 
   const options = [...set];
   for (let i = options.length - 1; i > 0; i--) {
-    const j = rand(i + 1);
+    const j = R(i + 1);
     [options[i], options[j]] = [options[j], options[i]];
   }
 
@@ -758,10 +602,10 @@ registerGame({
         }
       },
       onNextGame: () => {
-        if (typeof SZ_GAMES !== 'undefined' && typeof openGame === 'function') {
+        if (typeof openGame === 'function') {
           const others = SZ_GAMES.filter((g) => g.id !== 'power-breaker');
           if (others.length) {
-            const pick = others[Math.floor(Math.random() * others.length)];
+            const pick = others[R(others.length)];
             openGame(pick.id);
           }
         }
@@ -784,3 +628,5 @@ registerGame({
     status.textContent = 'Klicke „Start“ oder drücke Enter';
   }
 });
+
+renderShell();
