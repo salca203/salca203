@@ -171,7 +171,7 @@ function renderShell() {
       return;
     }
 
-    // Lobby-Ansicht: Spiel des Tages + Rekord-Übersicht + Farbenblind-Schalter
+    // Lobby-Hub: Übersicht, Zufallsspiel, Rekord-Reset & vielfältige Schnellauswahl
     const potd = getDailyGame();
     let playedCount = 0;
     let totalBest = 0;
@@ -183,29 +183,36 @@ function renderShell() {
       if (r.best > 0) totalBest += r.best;
     }
 
+    const quickPicks = [];
+    if (potd) quickPicks.push({ game: potd, tag: '📅 Heute' });
+    for (const g of SZ_GAMES) {
+      if (quickPicks.length >= 3) break;
+      if (!potd || g.id !== potd.id) {
+        quickPicks.push({ game: g, tag: g.cat || 'Tipp' });
+      }
+    }
+
     const hubBar = $('section', 'sz-hub-bar');
-    const potdBox = $('div', 'sz-hub-potd');
-    potdBox.append(
-      $('span', 'sz-hub-potd-label', '📅 Spiel des Tages'),
-      $('div', 'sz-hub-potd-title', potd ? `${potd.icon || '🎮'} ${potd.title}` : '—')
-    );
+    const hubTop = $('div', 'sz-filter-row');
 
     const statsBox = $('div', 'sz-hub-stats');
     statsBox.append(
       $('span', 'sz-sc-pill', `🎮 Gespielt: ${playedCount}/${SZ_GAMES.length}`),
-      $('span', 'sz-sc-pill', `🏆 Rekord-Summe: ${totalBest}`)
+      $('span', 'sz-sc-pill', `🏆 Rekord-Summe: ${totalBest}`),
+      $('span', 'sz-sc-pill', `★ Favoriten: ${szState.favorites.length}`)
     );
 
     const actionsBox = $('div', 'sz-hub-actions');
-    if (potd) {
-      const potdBtn = $('button', 'sz-btn sz-btn-primary', '▶ Heute spielen');
-      potdBtn.type = 'button';
-      potdBtn.onclick = () => {
-        szSfx.click();
-        openGame(potd.id);
-      };
-      actionsBox.append(potdBtn);
-    }
+    const randomBtn = $('button', 'sz-btn sz-btn-primary', '🎲 Zufallsspiel');
+    randomBtn.type = 'button';
+    randomBtn.onclick = () => {
+      if (!SZ_GAMES.length) return;
+      szSfx.click();
+      const pool = activeGameId ? SZ_GAMES.filter((g) => g.id !== activeGameId) : SZ_GAMES;
+      const pick = (pool.length ? pool : SZ_GAMES)[R((pool.length ? pool : SZ_GAMES).length)];
+      if (pick) openGame(pick.id);
+    };
+    actionsBox.append(randomBtn);
 
     let armed = false;
     const resetBtn = $('button', 'sz-btn sz-btn-ghost sz-btn-danger-soft', '🗑 Rekorde löschen');
@@ -226,7 +233,24 @@ function renderShell() {
       render();
     };
     actionsBox.append(resetBtn);
-    hubBar.append(potdBox, statsBox, actionsBox);
+
+    hubTop.append(statsBox, actionsBox);
+    hubBar.append(hubTop);
+
+    if (quickPicks.length) {
+      const pickRow = $('div', 'sz-mode-group');
+      for (const item of quickPicks) {
+        const chip = $('button', 'sz-mode-chip', `${item.tag}: ${item.game.icon || '🎮'} ${item.game.title}`);
+        chip.type = 'button';
+        chip.onclick = () => {
+          szSfx.click();
+          openGame(item.game.id);
+        };
+        pickRow.append(chip);
+      }
+      hubBar.append(pickRow);
+    }
+
     app.append(hubBar);
 
     // Zuletzt gespielt
