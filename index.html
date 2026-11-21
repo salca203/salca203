@@ -1,85 +1,17 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Spielezimmer</title>
-  <link rel="stylesheet" href="css/shell.css?v=16" />
-  <link rel="stylesheet" href="css/games.css?v=16" />
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/games.css" />
 </head>
 <body>
-  <div id="portal" class="sz-portal">
-    <header class="sz-topbar">
-      <div class="sz-brand">
-        <span class="sz-logo">🕹️</span>
-        <div>
-          <h1>Spielezimmer</h1>
-          <p class="sz-sub">Arcade-Portal · Alle Spiele lokal</p>
-        </div>
-      </div>
+  <div id="sz-app"></div>
 
-      <div class="sz-controls">
-        <input id="sz-search" class="sz-search" type="search" placeholder="Spiel suchen…" autocomplete="off" />
-        <button id="sz-random-btn" class="sz-btn sz-btn-ghost" type="button" title="Zufälliges Spiel starten">🎲 Zufall</button>
-        <button id="sz-players-btn" class="sz-btn sz-btn-ghost" type="button">👥 Namen</button>
-        <button id="sz-reset-saves-btn" class="sz-btn sz-btn-ghost" type="button" title="Gespeicherte Spielstände löschen">🗑️ Stände</button>
-        <button id="sz-back-btn" class="sz-btn sz-btn-primary hidden" type="button">← Startseite</button>
-      </div>
-    </header>
-
-    <section id="sz-banners" class="sz-banners" aria-label="Schnellfilter"></section>
-    <nav id="sz-cats" class="sz-cats" aria-label="Kategorien"></nav>
-
-    <main id="sz-main" class="sz-main">
-      <section id="sz-grid" class="sz-grid"></section>
-      <section id="sz-stage" class="sz-stage hidden"></section>
-    </main>
-
-    <nav class="sz-bottom-nav" aria-label="Mobile Navigation">
-      <button id="sz-nav-home" class="sz-nav-item active" type="button">
-        <span>🏠</span>
-        <small>Startseite</small>
-      </button>
-      <button id="sz-nav-search" class="sz-nav-item" type="button">
-        <span>🔍</span>
-        <small>Suchen</small>
-      </button>
-      <button id="sz-nav-saved" class="sz-nav-item" type="button">
-        <span>🔖</span>
-        <small>Gespeichert</small>
-      </button>
-      <button id="sz-nav-players" class="sz-nav-item" type="button">
-        <span>👥</span>
-        <small>Namen</small>
-      </button>
-    </nav>
-  </div>
-
-  <dialog id="sz-names-dialog" class="sz-dialog">
-    <form method="dialog" class="sz-dialog-box">
-      <h2>Mitspieler & Namen</h2>
-      <label class="sz-field">
-        <span>Spieler 1</span>
-        <input id="sz-p1" type="text" maxlength="20" />
-      </label>
-      <label class="sz-field">
-        <span>Spieler 2</span>
-        <input id="sz-p2" type="text" maxlength="20" />
-      </label>
-      <label class="sz-field">
-        <span>Gruppenliste (kommagetrennt, z. B. für 2–4P-Partyspiele)</span>
-        <textarea id="sz-group" rows="3" placeholder="Spieler 1, Spieler 2, Spieler 3, Spieler 4"></textarea>
-      </label>
-      <div class="sz-dialog-actions">
-        <button id="sz-names-save" class="sz-btn sz-btn-primary" value="save">Speichern</button>
-        <button class="sz-btn sz-btn-ghost" value="cancel">Schließen</button>
-      </div>
-    </form>
-  </dialog>
-
-  <script src="js/core.js?v=16"></script>
-  <script src="js/shell.js?v=16"></script>
-  <script src="js/games.js?v=16"></script>
+  <script src="js/core.js"></script>
+  <script src="js/shell.js"></script>
+  <script src="js/games.js"></script>
 </body>
 </html>
