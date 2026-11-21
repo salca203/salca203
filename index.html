@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Spielezimmer</title>
+  <link rel="stylesheet" href="css/shell.css?v=5" />
+  <link rel="stylesheet" href="css/games.css?v=5" />
+</head>
+<body>
+  <div id="portal" class="sz-portal">
+    <header class="sz-topbar">
+      <div class="sz-brand">
+        <span class="sz-logo">🕹️</span>
+        <div>
+          <h1>Spielezimmer</h1>
+          <p class="sz-sub">Lokales Portal · iPad Querformat</p>
+        </div>
+      </div>
+
+      <div class="sz-controls">
+        <input id="sz-search" class="sz-search" type="search" placeholder="Spiel oder Idee suchen…" autocomplete="off" />
+        <button id="sz-players-btn" class="sz-btn sz-btn-ghost" type="button">👥 Namen</button>
+        <button id="sz-back-btn" class="sz-btn sz-btn-primary hidden" type="button">← Übersicht</button>
+      </div>
+    </header>
+
+    <nav id="sz-cats" class="sz-cats" aria-label="Kategorien"></nav>
+
+    <main id="sz-main" class="sz-main">
+      <section id="sz-grid" class="sz-grid"></section>
+      <section id="sz-stage" class="sz-stage hidden"></section>
+    </main>
+  </div>
+
+  <dialog id="sz-names-dialog" class="sz-dialog">
+    <form method="dialog" class="sz-dialog-box">
+      <h2>Mitspieler & Namen</h2>
+      <label class="sz-field">
+        <span>Spieler 1</span>
+        <input id="sz-p1" type="text" maxlength="20" />
+      </label>
+      <label class="sz-field">
+        <span>Spieler 2</span>
+        <input id="sz-p2" type="text" maxlength="20" />
+      </label>
+      <label class="sz-field">
+        <span>Gruppenliste (kommagetrennt, z. B. für das Orakel)</span>
+        <textarea id="sz-group" rows="3" placeholder="Name 1, Name 2, Name 3, Name 4"></textarea>
+      </label>
+      <div class="sz-dialog-actions">
+        <button id="sz-names-save" class="sz-btn sz-btn-primary" value="save">Speichern</button>
+        <button class="sz-btn sz-btn-ghost" value="cancel">Schließen</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="js/core.js?v=5"></script>
+  <script src="js/shell.js?v=5"></script>
+  <script src="js/games.js?v=5"></script>
+</body>
+</html>
