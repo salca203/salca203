@@ -1,2355 +1,4602 @@
-// Gemeinsame Laufzeit-Hilfen für eingebettete Module (sauberes Aufräumen bei Spielwechsel)
-const makeRuntime = () => {
-  let timers = [];
-  let rafs = [];
-  let keyHandler = null;
-
-  const later = (fn, ms) => {
-    const id = setTimeout(fn, ms);
-    timers.push(id);
-    return id;
-  };
-
-  const trackRaf = (id) => {
-    rafs.push(id);
-    return id;
-  };
-
-  const setKey = (fn) => {
-    if (keyHandler) window.removeEventListener('keydown', keyHandler);
-    keyHandler = fn;
-    if (fn) window.addEventListener('keydown', keyHandler);
-  };
-
-  const prevCleanup = SZ.activeCleanup;
-  SZ.activeCleanup = () => {
-    timers.forEach(clearTimeout);
-    timers = [];
-    rafs.forEach(cancelAnimationFrame);
-    rafs = [];
-    if (keyHandler) window.removeEventListener('keydown', keyHandler);
-    keyHandler = null;
-    if (typeof prevCleanup === 'function') prevCleanup();
-  };
-
-  return { later, trackRaf, setKey };
-};
-
-// Kleine Helferleiste für Spieloptionen (z. B. Gegner, Stärke, Größe)
-const buildOptionBar = (defs, onChange) => {
-  const bar = $('div', 'sz-opts');
-  const state = {};
-  defs.forEach(([key, label, choices, defIdx = 0]) => {
-    state[key] = choices[defIdx][1];
-    const grp = $('label', 'sz-opt-group');
-    grp.append($('span', null, label));
-    const sel = $('select');
-    choices.forEach(([text, val]) => {
-      const opt = $('option');
-      opt.value = String(val);
-      opt.textContent = text;
-      if (val === state[key]) opt.selected = true;
-      sel.append(opt);
-    });
-    sel.onchange = () => {
-      const raw = sel.value;
-      state[key] = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
-      onChange(state);
-    };
-    grp.append(sel);
-    bar.append(grp);
-  });
-  return { bar, state };
-};
-
 // ==========================================
-// 1. HOCHGELADENE SPIELE (MIT OPTIONEN)
+// 1. MAHJONG
 // ==========================================
-
 registerGame({
-  id: 'tap-duell',
-  title: 'Tap-Duell',
-  icon: '⚡',
-  cat: 'Action',
-  desc: 'Warte auf JETZT TIPPEN und tippe als Erster auf deine Seite. Zu früh tippen gibt dem anderen den Punkt.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['m', 'Gegner', [['Computer', 1], ['Zu zweit', 2]], 0],
-      ['d', 'Stärke', [['Leicht', 0], ['Mittel', 1], ['Schwer', 2]], 1],
-      ['w', 'Punkte', [['3', 3], ['5', 5], ['10', 10]], 1],
-      ['sit', 'Position', [['Nebeneinander', 0], ['Gegenüber', 1]], 0]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;width:100%;height:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later, setKey } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.cssText = 'flex:1;min-height:0;width:100%';
-      container.append(playArea);
-
-      const WIN = o.w;
-      const RT = [[420, 800], [300, 600], [190, 330]][o.d ?? 1];
-      const pCol = ['var(--sz-p0)', 'var(--sz-p1)'];
-      let sc = [0, 0], go = 0, bz = 0, fin = 0;
-
-      const w = $('div', 'sz-duel' + (o.sit ? ' v' : ''));
-      w.style.height = '100%';
-      playArea.append(w);
-
-      const z = [0, 1].map((i) => {
-        const d = $('button', 'sz-zone');
-        d.style.background = pCol[i];
-        if (o.sit && !i) d.style.transform = 'rotate(180deg)';
-        d.onpointerdown = () => hit(i);
-        w.append(d);
-        return d;
-      });
-
-      const show = (m) => {
-        z.forEach((d, i) => {
-          const pName = i === 1 && o.m === 1 ? 'Computer' : SZ.names[i];
-          d.innerHTML = `<small style="opacity:.85">${pName}</small><span class="sz-big">${sc[i]}</span><span>${m[i]}</span>`;
-        });
-      };
-
-      const round = () => {
-        go = bz = 0;
-        show(['Warten …', 'Warten …']);
-        later(() => {
-          go = 1;
-          show(['JETZT TIPPEN!', 'JETZT TIPPEN!']);
-          if (o.m === 1) later(() => hit(1), RT[0] + R(RT[1] - RT[0]));
-        }, 1500 + R(3000));
-      };
-
-      const hit = (i) => {
-        if (bz || fin) return;
-        bz = 1;
-        const wn = go ? i : 1 - i;
-        sc[wn]++;
-        show([0, 1].map((k) => (k === wn ? (go ? 'Schneller! ✔' : 'Gegner war zu früh ✔') : (go ? 'Zu langsam' : 'Zu früh! ✖'))));
-        const n0 = SZ.names[0], n1 = o.m === 1 ? 'Computer' : SZ.names[1];
-        status.textContent = `${n0} ${sc[0]} : ${sc[1]} ${n1} · Ziel: ${WIN}`;
-        if (sc[wn] >= WIN) {
-          fin = 1;
-          later(() => show([0, 1].map((k) => (k === wn ? '🏆 Gewonnen!' : 'Verloren'))), 700);
-        } else {
-          later(round, 1500);
-        }
-      };
-
-      setKey((e) => {
-        if (e.repeat) return;
-        if (e.key === 'a') hit(0);
-        else if (e.key === 'l') hit(1);
-        else if (e.key === ' ') { e.preventDefault(); hit(o.m === 1 ? 0 : 1); }
-      });
-
-      status.textContent = `Erster mit ${WIN} Punkten gewinnt`;
-      round();
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'tauziehen',
-  title: 'Tauziehen',
-  icon: '💪',
-  cat: 'Action',
-  desc: 'Tippe so schnell du kannst auf deine Seite. Wer die Grenze auf die andere Seite schiebt, gewinnt.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['m', 'Gegner', [['Computer', 1], ['Zu zweit', 2]], 0],
-      ['d', 'Stärke', [['Leicht', 0], ['Mittel', 1], ['Schwer', 2]], 1],
-      ['sit', 'Position', [['Nebeneinander', 0], ['Gegenüber', 1]], 0]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;width:100%;height:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later, setKey } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.cssText = 'flex:1;min-height:0;width:100%';
-      container.append(playArea);
-
-      const IV = [[230, 150], [140, 120], [85, 70]][o.d ?? 1];
-      const pCol = ['var(--sz-p0)', 'var(--sz-p1)'];
-      let p = 50, ov = 0;
-
-      const w = $('div', 'sz-duel' + (o.sit ? ' v' : ''));
-      w.style.height = '100%';
-      playArea.append(w);
-
-      const z = [0, 1].map((i) => {
-        const pName = i === 1 && o.m === 1 ? 'Computer' : SZ.names[i];
-        const d = $('button', 'sz-zone', `<small style="opacity:.85">${pName}</small><span class="sz-big">👆</span><span>Tippen!</span>`);
-        d.style.background = pCol[i];
-        if (o.sit && !i) d.style.transform = 'rotate(180deg)';
-        d.onpointerdown = () => push(i);
-        w.append(d);
-        return d;
-      });
-
-      z[0].style.flex = z[1].style.flex = 50;
-
-      const push = (i) => {
-        if (ov) return;
-        p += i ? -3 : 3;
-        z[0].style.flex = p;
-        z[1].style.flex = 100 - p;
-        if (p >= 92 || p <= 8) {
-          ov = 1;
-          const t = p >= 92 ? 0 : 1;
-          const winName = t === 1 && o.m === 1 ? 'Computer' : SZ.names[t];
-          z[t].innerHTML = `<span class="sz-big">🏆</span><span>${winName} gewinnt!</span>`;
-          z[1 - t].innerHTML = '<span>Verloren</span>';
-          status.textContent = `${winName} hat gewonnen!`;
-        }
-      };
-
-      const ai = () => {
-        if (!ov) {
-          push(1);
-          later(ai, IV[0] + R(IV[1]));
-        }
-      };
-      if (o.m === 1) later(ai, 1000);
-
-      setKey((e) => {
-        if (e.repeat) return;
-        if (e.key === 'a') push(0);
-        else if (e.key === 'l') push(1);
-        else if (e.key === ' ') { e.preventDefault(); push(o.m === 1 ? 0 : 1); }
-      });
-
-      status.textContent = 'So schnell wie möglich auf deine Seite tippen!';
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'tic-tac-toe',
-  title: 'Tic-Tac-Toe',
-  icon: '✖️',
-  cat: 'Brettspiele',
-  desc: 'Drei in einer Reihe gewinnt. Die Punkte zählen über mehrere Runden.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['m', 'Gegner', [['Computer', 1], ['Zu zweit', 2]], 0],
-      ['d', 'Stärke', [['Leicht', 0], ['Mittel', 1], ['Schwer', 2]], 1]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.width = '100%';
-      container.append(playArea);
-
-      const L = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
-      const pCol = ['var(--sz-p0)', 'var(--sz-p1)'];
-      const p1Name = o.m === 1 ? 'Computer' : SZ.names[1];
-      let b, cur, over, sc = [0, 0], first = 1;
-
-      const g = $('div', 'sz-tt');
-      const nx = $('button', 'sz-btn sz-btn-primary', 'Nächste Runde');
-      nx.style.cssText = 'display:block;margin:14px auto 0';
-      playArea.append(g, nx);
-
-      const win = (a) => L.find((l) => a[l[0]] != null && a[l[0]] === a[l[1]] && a[l[1]] === a[l[2]]) || 0;
-      const curName = (idx) => (idx === 1 && o.m === 1 ? 'Computer' : SZ.names[idx]);
-
-      const u = () => {
-        status.textContent = `${SZ.names[0]} ${sc[0]} : ${sc[1]} ${p1Name} · ` +
-          (over === 1 ? `${curName(cur)} gewinnt! 🏆` : over === 2 ? 'Unentschieden' : `${curName(cur)} ist dran`);
-      };
-
-      const draw = () => {
-        g.innerHTML = '';
-        const w = win(b);
-        b.forEach((v, i) => {
-          const c = $('button', 'sz-tc' + (w && w.includes(i) ? ' win' : ''), v == null ? '' : '✕○'[v]);
-          c.style.color = v != null ? pCol[v] : '';
-          c.onclick = () => {
-            if (!over && b[i] == null && !(o.m === 1 && cur === 1)) mv(i);
-          };
-          g.append(c);
-        });
-        nx.hidden = !over;
-      };
-
-      const mv = (i) => {
-        b[i] = cur;
-        if (win(b)) { over = 1; sc[cur]++; }
-        else if (b.every((v) => v != null)) over = 2;
-        else cur = 1 - cur;
-        draw();
-        u();
-        if (!over && o.m === 1 && cur === 1) later(ai, 500);
-      };
-
-      const mm = (a, p, dp) => {
-        const w = win(a);
-        if (w) return a[w[0]] === 1 ? 10 - dp : dp - 10;
-        if (a.every((v) => v != null)) return 0;
-        let r = p === 1 ? -99 : 99;
-        for (let i = 0; i < 9; i++) if (a[i] == null) {
-          a[i] = p;
-          const v = mm(a, 1 - p, dp + 1);
-          a[i] = null;
-          r = p === 1 ? Math.max(r, v) : Math.min(r, v);
-        }
-        return r;
-      };
-
-      const ai = () => {
-        const d = o.d ?? 1;
-        const e = [...b.keys()].filter((i) => b[i] == null);
-        if (!e.length) return;
-        const c = [0, 2, 6, 8].filter((i) => b[i] == null);
-        const t = (p) => e.find((i) => { b[i] = p; const w = win(b); b[i] = null; return w; });
-        if (d === 0 && R(100) < 60) return mv(e[R(e.length)]);
-        if (d === 2) {
-          let bs = -99, bm = [];
-          e.forEach((i) => {
-            b[i] = 1;
-            const v = mm(b, 0, 1);
-            b[i] = null;
-            if (v > bs) { bs = v; bm = [i]; }
-            else if (v === bs) bm.push(i);
-          });
-          return mv(bm[R(bm.length)]);
-        }
-        mv(t(1) ?? t(0) ?? (b[4] == null ? 4 : c.length ? c[R(c.length)] : e[R(e.length)]));
-      };
-
-      const nw = () => {
-        b = Array(9).fill(null);
-        over = 0;
-        first = 1 - first;
-        cur = first;
-        draw();
-        u();
-        if (o.m === 1 && cur === 1) later(ai, 500);
-      };
-
-      nx.onclick = nw;
-      nw();
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'turmbau',
-  title: 'Turmbau',
-  icon: '🏗️',
-  cat: 'Action',
-  desc: 'Tippe im richtigen Moment, damit der Block auf dem Turm landet. Was übersteht, fällt ab.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['d', 'Schwierigkeit', [['Leicht', 0], ['Mittel', 1], ['Schwer', 2]], 1]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%;height:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { trackRaf, setKey } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.cssText = 'flex:1;min-height:0;display:flex;align-items:center;justify-content:center;width:100%';
-      container.append(playArea);
-
-      const W = 400, H = 560, BH = 26, key = 'sz_stk_' + (o.d ?? 1);
-      const cv = $('canvas', 'sz-stack-cv');
-      cv.width = W; cv.height = H;
-      playArea.append(cv);
-      const x = cv.getContext('2d');
-
-      let best = 0;
-      try { best = +localStorage.getItem(key) || 0; } catch (_) {}
-
-      let L, cur, dir, cam, sc, st, deb, combo, lt = 0, cd = 0, nb = 0;
-      const hue = (i) => (i * 14 + 200) % 360;
-      const mkc = () => { const p = L[L.length - 1]; cur = { x: 0, w: p.w }; dir = 1; };
-      const u = () => { status.textContent = `Höhe ${sc} · 🏆 ${best}`; };
-
-      const reset = () => {
-        L = [{ x: 100, w: 200 }];
-        sc = 0; st = 0; nb = 0; deb = []; combo = 0; cam = 0;
-        mkc();
-        u();
-      };
-
-      const tap = () => {
-        if (st === 2) { if (Date.now() > cd) reset(); return; }
-        if (st === 0) { st = 1; return; }
-        const p = L[L.length - 1];
-        const ov = Math.min(cur.x + cur.w, p.x + p.w) - Math.max(cur.x, p.x);
-        if (ov <= 0) {
-          st = 2;
-          cd = Date.now() + 500;
-          deb.push({ x: cur.x, w: cur.w, y: L.length, vy: 0, h: hue(L.length) });
-          if (sc > best) {
-            best = sc; nb = 1;
-            try { localStorage.setItem(key, String(best)); } catch (_) {}
-          }
-          u();
-          return;
-        }
-        if (Math.abs(cur.x - p.x) < [9, 5, 3][o.d ?? 1]) {
-          cur.x = p.x;
-          cur.w = Math.min(cur.w + (combo > 2 ? 6 : 0), 200);
-          combo++;
-        } else {
-          combo = 0;
-          const nx = Math.max(cur.x, p.x);
-          if (cur.x < p.x) deb.push({ x: cur.x, w: p.x - cur.x, y: L.length, vy: 0, h: hue(L.length) });
-          else deb.push({ x: p.x + p.w, w: cur.x + cur.w - (p.x + p.w), y: L.length, vy: 0, h: hue(L.length) });
-          cur.x = nx;
-          cur.w = ov;
-        }
-        L.push({ x: cur.x, w: cur.w });
-        sc++;
-        u();
-        mkc();
-      };
-
-      cv.onpointerdown = tap;
-      setKey((e) => {
-        if (!e.repeat && (e.key === ' ' || e.key === 'ArrowDown')) { e.preventDefault(); tap(); }
-      });
-
-      const yy = (i) => H - 120 - (i * BH) + cam;
-      const blk = (a, w, i, h) => {
-        x.fillStyle = `hsl(${h} 70% 58%)`;
-        x.fillRect(a, yy(i), w, BH - 2);
-        x.fillStyle = `hsl(${h} 70% 70%)`;
-        x.fillRect(a, yy(i), w, 6);
-        x.fillStyle = `hsl(${h} 70% 42%)`;
-        x.fillRect(a, yy(i) + BH - 8, w, 6);
-      };
-
-      const go = (now) => {
-        const d = Math.min(2.5, (now - (lt || now)) / 16.67);
-        lt = now;
-        if (st === 1) {
-          const v = Math.min(7.5, 2.6 + sc * 0.12) * [0.8, 1, 1.25][o.d ?? 1] * d;
-          cur.x += dir * v;
-          if (cur.x < 0) { cur.x = 0; dir = 1; }
-          if (cur.x + cur.w > W) { cur.x = W - cur.w; dir = -1; }
-        }
-        const tg = Math.max(0, (L.length - 6) * BH);
-        cam += (tg - cam) * 0.1 * d;
-        deb.forEach((b) => { b.vy += 0.012 * d; b.y -= b.vy * d; });
-        deb = deb.filter((b) => b.y > -12);
-
-        const g = x.createLinearGradient(0, 0, 0, H);
-        g.addColorStop(0, `hsl(${(220 + sc * 5) % 360} 60% 22%)`);
-        g.addColorStop(1, `hsl(${(270 + sc * 5) % 360} 60% 10%)`);
-        x.fillStyle = g;
-        x.fillRect(0, 0, W, H);
-
-        L.forEach((b, i) => { if (yy(i) < H && yy(i) > -BH) blk(b.x, b.w, i, hue(i)); });
-        deb.forEach((b) => blk(b.x, b.w, b.y, b.h));
-        if (st === 1) blk(cur.x, cur.w, L.length, hue(L.length));
-
-        x.textAlign = 'center';
-        x.lineWidth = 6;
-        x.strokeStyle = '#14213d';
-        x.fillStyle = '#fff';
-        x.lineJoin = 'round';
-        x.font = '800 48px ui-rounded, system-ui, sans-serif';
-        if (st) { x.strokeText(sc, W / 2, 64); x.fillText(sc, W / 2, 64); }
-        x.font = '800 20px ui-rounded, system-ui, sans-serif';
-        if (st === 0) {
-          x.strokeText('Tippen zum Starten und Bauen', W / 2, H / 2);
-          x.fillText('Tippen zum Starten und Bauen', W / 2, H / 2);
-        }
-        if (st === 2) {
-          const msg = nb ? '🏆 Neuer Bestwert!' : 'Eingestürzt!';
-          x.strokeText(msg, W / 2, 120); x.fillText(msg, W / 2, 120);
-        }
-
-        trackRaf(requestAnimationFrame(go));
-      };
-
-      reset();
-      trackRaf(requestAnimationFrame(go));
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'ultimate-tic-tac-toe',
-  title: 'Ultimate Tic-Tac-Toe',
-  icon: '❌',
-  cat: 'Brettspiele',
-  desc: 'Dein Zug bestimmt das Feld des Gegners. Gewinne drei kleine Felder in einer Reihe.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['m', 'Gegner', [['Computer', 1], ['Zu zweit', 2]], 0],
-      ['d', 'Stärke', [['Leicht', 0], ['Mittel', 1], ['Schwer', 2]], 1]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.width = '100%';
-      container.append(playArea);
-
-      const pCol = ['var(--sz-p0)', 'var(--sz-p1)'];
-      const pName = (idx) => (idx === 1 && o.m === 1 ? 'Computer' : SZ.names[idx]);
-      let B = Array(81).fill(null), W = Array(9).fill(null), cur = 0, nx = -1, over = 0;
-      const g = $('div', 'sz-ut');
-      playArea.append(g);
-
-      const L = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
-      const wn = (a) => {
-        for (const [x, y, z] of L) if (a[x] != null && a[x] < 2 && a[x] === a[y] && a[y] === a[z]) return a[x];
-        return a.every((v) => v != null) ? 2 : null;
-      };
-
-      const st = () => {
-        status.textContent = `${pName(cur)}${nx < 0 ? ' · beliebiges Feld' : ''}`;
-      };
-
-      const draw = () => {
-        g.innerHTML = '';
-        for (let i = 0; i < 9; i++) {
-          const d = $('div', 'sz-sb' + ((nx < 0 || nx === i) && W[i] == null && !over ? ' act' : ''));
-          if (W[i] != null && W[i] < 2) {
-            d.innerHTML = `<em style="color:${pCol[W[i]]}">${'✕○'[W[i]]}</em>`;
-          } else {
-            for (let j = 0; j < 9; j++) {
-              const v = B[i * 9 + j];
-              const c = $('button', 'sz-uc', v == null ? '' : '✕○'[v]);
-              if (v != null) c.style.color = pCol[v];
-              c.onclick = () => { if (!(o.m === 1 && cur === 1)) play(i, j); };
-              d.append(c);
-            }
-          }
-          g.append(d);
-        }
-      };
-
-      const play = (i, j) => {
-        if (over || W[i] != null || B[i * 9 + j] != null || (nx >= 0 && nx !== i)) return;
-        B[i * 9 + j] = cur;
-        W[i] = wn(B.slice(i * 9, i * 9 + 9));
-        const w = wn(W);
-        if (w != null) {
-          over = 1;
-          status.textContent = w === 2 ? 'Unentschieden' : `${pName(w)} gewinnt! 🏆`;
-        } else {
-          cur = 1 - cur;
-          nx = W[j] == null ? j : -1;
-          st();
-          if (o.m === 1 && cur === 1) later(ai, 600);
-        }
-        draw();
-      };
-
-      const ai = () => {
-        const d = o.d ?? 1, m = [];
-        for (let i = 0; i < 9; i++) if (W[i] == null && (nx < 0 || nx === i))
-          for (let j = 0; j < 9; j++) if (B[i * 9 + j] == null) m.push([i, j]);
-        if (!m.length) return;
-        if (d === 0) return play(...m[R(m.length)]);
-        const sc = ([i, j]) => {
-          const a = B.slice(i * 9, i * 9 + 9);
-          a[j] = 1;
-          let v = (wn(a) === 1 ? 5 : 0) + (j === 4 ? 1 : 0) + (W[j] == null ? 0 : -2) + Math.random();
-          if (d === 2) {
-            const W2 = [...W]; W2[i] = wn(a);
-            if (wn(W2) === 1) v += 100;
-            if (W[j] == null) {
-              const t = B.slice(j * 9, j * 9 + 9);
-              if (i === j) t[j] = 1;
-              for (let k = 0; k < 9; k++) if (t[k] == null) { t[k] = 0; if (wn(t) === 0) v -= 6; t[k] = null; }
-            }
-            const c = B.slice(i * 9, i * 9 + 9); c[j] = 0;
-            if (wn(c) === 0) v += 4;
-            if (wn(a) === 1 && W[j] != null) v += 1;
-          }
-          return v;
-        };
-        m.sort((p, q) => sc(q) - sc(p));
-        play(...m[0]);
-      };
-
-      draw();
-      st();
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'vier-in-einer-reihe',
-  title: 'Vier in einer Reihe',
-  icon: '🔴',
-  cat: 'Brettspiele',
-  desc: 'Klassisch fallen die Steine nach unten. Im Modus „Freies Feld“ setzt du Steine überall hin.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['m', 'Gegner', [['Computer', 1], ['Zu zweit', 2]], 0],
-      ['md', 'Modus', [['Klassisch', 0], ['Freies Feld', 1]], 0],
-      ['d', 'Stärke', [['Leicht', 0], ['Mittel', 1], ['Schwer', 2]], 1]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.width = '100%';
-      container.append(playArea);
-
-      const C = 7, H = 6, fr = o.md === 1;
-      const pCol = ['var(--sz-p0)', 'var(--sz-p1)'];
-      const pName = (idx) => (idx === 1 && o.m === 1 ? 'Computer' : SZ.names[idx]);
-      const g = $('div', 'sz-c4'), cl = [];
-      let b = Array.from({ length: C }, () => Array(H).fill(null)), cur = 0, over = 0, bz = 0;
-      playArea.append(g);
-
-      const win = (c, r, p) => [[1,0],[0,1],[1,1],[1,-1]].some(([dx, dy]) => {
-        let n = 1;
-        for (const k of [1, -1]) for (let i = 1; i < 4; i++) {
-          if (b[c + k * i * dx]?.[r + k * i * dy] === p) n++;
-          else break;
-        }
-        return n >= 4;
-      });
-
-      const low = (c) => b[c].indexOf(null);
-      const u = () => { status.textContent = `${pName(cur)} ist dran`; };
-      const paint = () => b.forEach((col, c) => col.forEach((v, r) => {
-        cl[c][r].style.background = v == null ? '' : pCol[v];
-      }));
-
-      b.forEach((_, c) => {
-        const e = $('button', 'sz-col');
-        cl[c] = [];
-        e.onclick = () => tap(c, null);
-        for (let r = H - 1; r >= 0; r--) {
-          const x = $('i', 'sz-cell');
-          x.onclick = (ev) => { if (fr) { ev.stopPropagation(); tap(c, r); } };
-          cl[c][r] = x;
-          e.append(x);
-        }
-        g.append(e);
-      });
-
-      const tap = (c, r) => {
-        if (over || bz || (o.m === 1 && cur === 1)) return;
-        if (fr) { if (r == null) return; }
-        else r = low(c);
-        if (r < 0 || b[c][r] != null) return;
-        put(c, r);
-      };
-
-      const put = (c, r) => {
-        bz = 1;
-        b[c][r] = cur;
-        paint();
-        later(() => {
-          bz = 0;
-          if (win(c, r, cur)) {
-            over = 1;
-            status.textContent = `${pName(cur)} gewinnt! 🏆`;
-            return;
-          }
-          if (b.every((k) => k.every((v) => v != null))) {
-            over = 1;
-            status.textContent = 'Unentschieden';
-            return;
-          }
-          cur = 1 - cur;
-          u();
-          if (o.m === 1 && cur === 1) later(ai, 300);
-        }, 120);
-      };
-
-      const mvs = () => {
-        const a = [];
-        for (let c = 0; c < C; c++) for (let r = 0; r < H; r++)
-          if (b[c][r] == null && (fr || r === low(c))) a.push([c, r]);
-        return a;
-      };
-
-      const ai = () => {
-        const ok = mvs();
-        if (!ok.length) return;
-        const t = (p) => ok.find(([c, r]) => { b[c][r] = p; const w = win(c, r, p); b[c][r] = null; return w; });
-        if ((o.d ?? 1) === 0 && R(100) < 45) return put(...ok[R(ok.length)]);
-        const choice = t(1) ?? t(0) ?? ok.find(([c]) => c === 3) ?? ok[R(ok.length)];
-        put(...choice);
-      };
-
-      u();
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'woertle',
-  title: 'Wörtle',
-  icon: '🔠',
-  cat: 'Wörter & Quiz',
-  desc: 'Errate das gesuchte Wort. Grün: richtig. Gelb: falscher Platz. Grau: kommt nicht vor.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['l', 'Wortlänge', [['4 Buchstaben', 4], ['5 Buchstaben', 5], ['6 Buchstaben', 6]], 1],
-      ['t', 'Versuche', [['8 Versuche', 8], ['6 Versuche', 6], ['4 Versuche', 4]], 1]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { setKey } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.width = '100%';
-      container.append(playArea);
-
-      const L = o.l ?? 5, T = o.t ?? 6;
-      const RAW = ('APFEL BIRNE BLUME BRIEF BRUST BUCHE DACHS DECKE ENGEL FARBE FEUER FILME FISCH FLUSS FRAGE FUCHS GABEL GRUND HAFEN HASEN HONIG HUNDE INSEL JUNGE KATZE KERZE KLEID KOHLE KRAFT KREIS LAMPE LEBEN LICHT LINSE LÖWEN MACHT MAUER MILCH MONAT MÜHLE MUSIK NACHT NADEL NEBEL OZEAN PFERD PILZE PUPPE QUARK RADIO REGEL REISE ROBBE ROSEN SCHAF SCHAL SCHUH SEIDE SONNE SPIEL STADT STEIN STERN STIFT STUHL TASSE TIGER TISCH TRAUM TÜREN VOGEL WAAGE WELLE WIESE WOLKE WURST ZEBRA ZIEGE ZWERG '
-        + 'AUTO BALL BAUM BETT BIER BILD BLAU BOOT BROT BUCH DACH DORF ENTE ERDE ESEL FELD FILM FREI GANS GELB GELD GRAS GRÜN HAND HASE HAUS HELD HERZ HOSE HUHN JAHR JUNG KALT KIND KINO KOPF LAND LAUT LEER LIED LUFT MAUS MEER MOND MUND NASE NEST OBST OFEN PAAR POST REIS ROCK ROSE SAND SAFT SALZ SEIL SOHN TAXI TIER TURM VASE WALD WAND WIND WOLF ZAHN ZELT '
-        + 'BANANE BRÜCKE DRACHEN ELEFANT FENSTER FREUND GARTEN GITARRE HAMMER HIMMEL KAFFEE KÄFIG KELLER KIRCHE KLEBER LEITER MÄRCHEN MUSTER NUDELN ORANGE PAPIER RAKETE REGAL SCHERE SCHLÜSSEL SESSEL SPINNE STRAND STRASSE TELLER TREPPE TURNEN WINTER WOLKEN ZAUBER ZIEGEL ZITRONE ZUCKER ABEND AFFEN BADEN BERGE BLATT BRAUN BRILLE GEBÄUDE HÜGEL KÄSE KÜRBIS LATERNE MURMEL PINSEL PUDDING RUCKSACK TOMATE TASCHE TUNNEL VULKAN WAGEN ZIRKUS').split(' ');
-      const pool = RAW.filter((w) => w.length === L);
-      const w = (pool.length ? pool : RAW)[R((pool.length ? pool : RAW).length)];
-
-      const box = $('div', 'sz-wg'), kb = $('div', 'sz-wk');
-      box.style.setProperty('--rows', T);
-      playArea.append(box, kb);
-
-      let rows = [], cur = '', done = 0, kc = {}, fresh = -1;
-      const rk = { g: 3, y: 2, a: 1 };
-
-      const sc = (g) => {
-        const r = Array(w.length).fill('a'), u = [...w];
-        for (let i = 0; i < w.length; i++) if (g[i] === w[i]) { r[i] = 'g'; u[i] = null; }
-        for (let i = 0; i < w.length; i++) if (r[i] === 'a') {
-          const k = u.indexOf(g[i]);
-          if (k >= 0) { r[i] = 'y'; u[k] = null; }
-        }
-        return r;
-      };
-
-      const draw = () => {
-        box.innerHTML = '';
-        for (let r = 0; r < T; r++) {
-          const row = $('div', 'sz-wr'), g = rows[r];
-          for (let c = 0; c < w.length; c++) {
-            row.append($('div', 'sz-wc' + (g ? ' ' + g.s[c] : '') + (g && r === fresh ? ' flip' : ''), g ? g.w[c] : r === rows.length ? cur[c] || '' : ''));
-          }
-          box.append(row);
-        }
-        kb.innerHTML = '';
-        ['QWERTZUIOPÜ', 'ASDFGHJKLÖÄ', '⏎YXCVBNM⌫'].forEach((l) => {
-          const row = $('div', 'sz-wr');
-          [...l].forEach((k) => {
-            const b = $('button', 'sz-wkb ' + (kc[k] || ''), k);
-            b.onclick = () => key(k);
-            row.append(b);
-          });
-          kb.append(row);
-        });
-        status.textContent = done === 1 ? '🎉 Richtig!' : done === 2 ? 'Das Wort war ' + w : `Versuch ${Math.min(rows.length + 1, T)} von ${T} · ${w.length} Buchstaben`;
-      };
-
-      const key = (k) => {
-        if (done) return;
-        if (k !== '⏎') fresh = -1;
-        if (k === '⌫') cur = cur.slice(0, -1);
-        else if (k === '⏎') {
-          if (cur.length < w.length) return;
-          const r = sc(cur);
-          rows.push({ w: cur, s: r });
-          fresh = rows.length - 1;
-          [...cur].forEach((ch, i) => { if (!kc[ch] || rk[r[i]] > rk[kc[ch]]) kc[ch] = r[i]; });
-          if (cur === w) done = 1;
-          else if (rows.length >= T) done = 2;
-          cur = '';
-        } else if (cur.length < w.length && /^[A-ZÄÖÜ]$/.test(k)) {
-          cur += k;
-        }
-        draw();
-      };
-
-      setKey((e) => key(e.key === 'Enter' ? '⏎' : e.key === 'Backspace' ? '⌫' : e.key.toUpperCase()));
-      draw();
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'wuerfelkoenig',
-  title: 'Würfelkönig',
-  icon: '🎲',
+  id: 'mahjong',
+  title: 'Mahjong',
+  icon: '🀄',
   cat: 'Puzzle',
-  desc: 'Bis zu 3 Würfe pro Runde. Würfel antippen zum Behalten, dann ein Feld wählen. 13 Runden.',
+  desc: 'Wähle zwei gleiche Kacheln mit mindestens einer freien linken oder rechten Seite und räume das Feld ab.',
   run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['m', 'Modus', [['Allein', 1], ['Zu zweit', 2], ['Gegen Computer', 3]], 2]
-    ], () => mount());
+    const COLS = 6, ROWS = 4;
+    const SYMS = ['🀄', '🎋', '🌸', '🐉', '🏮', '🪙', '🎲', '🌙', '⭐', '🔥', '🍀', '💎'];
+    const pairs = [];
+    for (let i = 0; i < (COLS * ROWS) / 2; i++) {
+      const s = SYMS[i % SYMS.length];
+      pairs.push(s, s);
+    }
+    pairs.sort(() => Math.random() - 0.5);
 
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%';
-    container.append(bar);
-    body.append(container);
+    let board = [...pairs];
+    let selected = null;
+    let matched = 0;
 
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.width = '100%';
-      container.append(playArea);
-
-      const ai = o.m === 3, np = o.m === 1 ? 1 : 2;
-      const pNames = np === 1 ? [SZ.names[0]] : [SZ.names[0], ai ? 'Computer' : SZ.names[1]];
-      const CT = ['Einser','Zweier','Dreier','Vierer','Fünfer','Sechser','Dreierpasch','Viererpasch','Full House','Kleine Straße','Große Straße','Fünferpasch','Chance'];
-      const EX = [3, 6, 9, 12, 15, 18, 22, 13, 13, 12, 16, 18, 22];
-      const S = Array.from({ length: np }, () => Array(13).fill(null));
-      const box = $('div', 'sz-kn');
-      playArea.append(box);
-
-      let d = [1, 1, 1, 1, 1], hd = [0, 0, 0, 0, 0], rl = 0, cur = 0, done = 0, rolling = 0;
-
-      const pts = (k, dice) => {
-        const c = [0, 0, 0, 0, 0, 0, 0];
-        dice.forEach((v) => c[v]++);
-        const sm = dice.reduce((a, b) => a + b, 0);
-        const mx = Math.max(...c);
-        const r = (...a) => a.every((v) => c[v]);
-        return k < 6 ? c[k + 1] * (k + 1)
-          : k === 6 ? (mx >= 3 ? sm : 0)
-          : k === 7 ? (mx >= 4 ? sm : 0)
-          : k === 8 ? (c.includes(3) && c.includes(2) ? 25 : 0)
-          : k === 9 ? (r(1,2,3,4) || r(2,3,4,5) || r(3,4,5,6) ? 30 : 0)
-          : k === 10 ? (r(1,2,3,4,5) || r(2,3,4,5,6) ? 40 : 0)
-          : k === 11 ? (mx === 5 ? 50 : 0)
-          : sm;
-      };
-
-      const tot = (p) => {
-        const u = S[p].slice(0, 6).reduce((a, b) => a + (b || 0), 0);
-        return S[p].reduce((a, b) => a + (b || 0), 0) + (u >= 63 ? 35 : 0);
-      };
-
-      const hum = () => !(ai && cur === 1);
-
-      const roll = () => {
-        if (rl >= 3 || !hum() || done || rolling) return;
-        rolling = 1;
-        const keep = [...hd], t0 = performance.now();
-        const spin = () => {
-          const q = performance.now() - t0;
-          d = d.map((v, i) => (keep[i] ? v : 1 + R(6)));
-          draw(1);
-          if (q < 420) later(spin, 60);
-          else { rolling = 0; rl++; draw(); }
-        };
-        spin();
-      };
-
-      const pick = (k) => {
-        if (S[cur][k] != null) return;
-        S[cur][k] = pts(k, d);
-        rl = 0;
-        hd = [0, 0, 0, 0, 0];
-        if (S.every((row) => row.every((v) => v != null))) {
-          done = 1;
-          const w = np > 1 && tot(1) > tot(0) ? 1 : 0;
-          status.textContent = np > 1
-            ? (tot(0) === tot(1) ? 'Unentschieden' : `${pNames[w]} gewinnt! 🏆`)
-            : `🎉 ${tot(0)} Punkte`;
-        } else {
-          cur = (cur + 1) % np;
-          if (!hum()) later(aiRoll, 800);
-        }
-        draw();
-      };
-
-      const aiRoll = () => {
-        d = d.map((v, i) => (hd[i] ? v : 1 + R(6)));
-        rl++;
-        if (rl < 3) {
-          const c = [0, 0, 0, 0, 0, 0, 0];
-          d.forEach((v) => c[v]++);
-          let b = 1;
-          for (let v = 2; v < 7; v++) if (c[v] >= c[b]) b = v;
-          hd = d.map((v) => +(v === b));
-          draw();
-          later(aiRoll, 900);
-        } else {
-          draw();
-          later(() => {
-            const free = [...Array(13).keys()].filter((k) => S[1][k] == null);
-            free.sort((a, b) => (pts(b, d) - EX[b]) - (pts(a, d) - EX[a]));
-            pick(free[0]);
-          }, 900);
-        }
-      };
-
-      const draw = (spinning = 0) => {
-        box.innerHTML = '';
-        if (!done) status.textContent = `${pNames[cur]} · Wurf ${rl}/3`;
-
-        const L = $('div', 'sz-kd'), D = $('div', 'sz-dice');
-        d.forEach((v, i) => {
-          const b = $('button', 'sz-dc' + (hd[i] ? ' h' : '') + (spinning && !hd[i] ? ' roll' : ''), '⚀⚁⚂⚃⚄⚅'[v - 1]);
-          b.onclick = () => { if (rl && rl < 3 && hum() && !done && !rolling) { hd[i] ^= 1; draw(); } };
-          D.append(b);
-        });
-
-        const r = $('button', 'sz-btn sz-btn-primary', rl >= 3 ? 'Feld wählen' : 'Würfeln');
-        r.disabled = rl >= 3 || !hum() || done || rolling;
-        r.onclick = roll;
-        L.append(D, r, $('small', null, 'Würfel antippen = behalten'));
-
-        const T = $('table', 'sz-kt');
-        T.innerHTML = `<tr><td></td>${pNames.map((n) => `<th>${n}</th>`).join('')}</tr>`;
-        CT.forEach((n, k) => {
-          const tr = $('tr');
-          tr.append($('td', null, n));
-          pNames.forEach((_, p) => {
-            const td = $('td');
-            if (S[p][k] != null) td.textContent = S[p][k];
-            else if (p === cur && rl && hum() && !done && !rolling) {
-              td.textContent = pts(k, d);
-              td.className = 'pk';
-              td.onclick = () => pick(k);
-            }
-            tr.append(td);
-          });
-          T.append(tr);
-        });
-        T.append($('tr', null, `<td><b>Summe</b> (Bonus +35 ab 63 oben)</td>${pNames.map((_, p) => `<td><b>${tot(p)}</b></td>`).join('')}`));
-
-        box.append(L, T);
-      };
-
-      draw();
-    };
-
-    mount();
-  }
-});
-
-registerGame({
-  id: 'zahlenfusion',
-  title: 'Zahlenfusion',
-  icon: '🔢',
-  cat: 'Puzzle',
-  desc: 'Wische in eine Richtung, alle Kacheln rutschen. Zwei gleiche Zahlen verschmelzen zur doppelten.',
-  run({ body, status }) {
-    const { bar, state: o } = buildOptionBar([
-      ['n', 'Spielfeld', [['Klassisch 4×4', 4], ['Leicht 5×5', 5], ['Schwer 3×3', 3]], 0]
-    ], () => mount());
-
-    const container = $('div', null, '');
-    container.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%';
-    container.append(bar);
-    body.append(container);
-
-    let playArea = null;
-    const mount = () => {
-      if (playArea) playArea.remove();
-      const { later, setKey } = makeRuntime();
-      playArea = $('div', null, '');
-      playArea.style.width = '100%';
-      container.append(playArea);
-
-      const N = o.n ?? 4, key = 'sz_g48_' + N;
-      const g = $('div', 'sz-g48');
-      g.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
-      for (let i = 0; i < N * N; i++) g.append($('div', 'sz-tb'));
-      playArea.append(g);
-
-      let best = 0;
-      try { best = +localStorage.getItem(key) || 0; } catch (_) {}
-
-      let nbz = 0, won = 0, b = Array.from({ length: N }, () => Array(N).fill(null)), sc = 0, over = 0, lk = 0, sx = 0, sy = 0;
-
-      const col = (v) => `hsl(${(Math.log2(v) * 34 + 14) % 360} 72% ${v < 8 ? 66 : 56}%)`;
-      const pos = (t) => `translate(${t.c * 100}%, ${t.r * 100}%)`;
-      const upd = () => { status.textContent = `Punkte ${sc} · 🏆 ${best}` + (won ? ' · 🎉 2048 erreicht!' : ''); };
-
-      const tw = (t) => {
-        const inner = t.el.firstChild;
-        inner.textContent = t.v;
-        inner.style.background = col(t.v);
-        inner.style.fontSize = t.v > 999 ? '20px' : t.v > 99 ? '26px' : '32px';
-        inner.style.color = t.v < 8 ? '#5b4a2a' : '#fff';
-      };
-
-      const add = () => {
-        const e = [];
-        b.forEach((row, r) => row.forEach((v, c) => { if (!v) e.push([r, c]); }));
-        if (!e.length) return;
-        const [r, c] = e[R(e.length)];
-        const t = { v: R(10) ? 2 : 4, r, c, el: $('div', 'sz-tl new') };
-        t.el.style.width = t.el.style.height = (100 / N) + '%';
-        t.el.append($('i'));
-        tw(t);
-        t.el.style.transform = pos(t);
-        g.append(t.el);
-        b[r][c] = t;
-      };
-
-      const can = () => b.some((row, r) => row.some((t, c) =>
-        !t || (c < N - 1 && row[c + 1] && row[c + 1].v === t.v) || (r < N - 1 && b[r + 1][c] && b[r + 1][c].v === t.v)
-      ));
-
-      const mv = (dx, dy) => {
-        if (lk || over) return;
-        let moved = 0, gain = 0;
-        const mg = [];
-        for (let k = 0; k < N; k++) {
-          const co = [];
-          for (let i = 0; i < N; i++) co.push(dx ? [k, dx < 0 ? i : N - 1 - i] : [dy < 0 ? i : N - 1 - i, k]);
-          const ts = co.map(([r, c]) => b[r][c]).filter(Boolean), out = [];
-          for (let i = 0; i < ts.length; i++) {
-            if (i + 1 < ts.length && ts[i].v === ts[i + 1].v) { out.push([ts[i], ts[i + 1]]); i++; }
-            else out.push([ts[i]]);
-          }
-          co.forEach(([r, c]) => { b[r][c] = null; });
-          out.forEach((u, j) => {
-            const [r, c] = co[j];
-            u.forEach((t) => { if (t.r !== r || t.c !== c) moved = 1; t.r = r; t.c = c; });
-            b[r][c] = u[0];
-            if (u[1]) { mg.push(u); moved = 1; }
-          });
-        }
-        if (!moved) return;
-        lk = 1;
-        b.forEach((row) => row.forEach((t) => { if (t) t.el.style.transform = pos(t); }));
-        mg.forEach(([a, c]) => { c.el.style.transform = pos(a); });
-        later(() => {
-          mg.forEach(([a, c]) => {
-            c.el.remove();
-            a.v *= 2;
-            gain += a.v;
-            if (a.v >= 2048) won = 1;
-            tw(a);
-            a.el.classList.remove('new', 'mg');
-            void a.el.offsetWidth;
-            a.el.classList.add('mg');
-          });
-          sc += gain;
-          if (sc > best) {
-            best = sc; nbz = 1;
-            try { localStorage.setItem(key, String(best)); } catch (_) {}
-          }
-          add();
-          upd();
-          lk = 0;
-          if (!can()) {
-            over = 1;
-            status.textContent = `Keine Züge mehr · ${sc} Punkte · 🏆 ${best}` + (nbz ? ' · Neuer Bestwert!' : '');
-          }
-        }, 130);
-      };
-
-      g.onpointerdown = (e) => { sx = e.clientX; sy = e.clientY; };
-      g.onpointerup = (e) => {
-        const dx = e.clientX - sx, dy = e.clientY - sy;
-        if (Math.abs(dx) < 24 && Math.abs(dy) < 24) return;
-        if (Math.abs(dx) > Math.abs(dy)) mv(Math.sign(dx), 0);
-        else mv(0, Math.sign(dy));
-      };
-
-      setKey((e) => {
-        const m = { ArrowUp: [0, -1], w: [0, -1], ArrowDown: [0, 1], s: [0, 1], ArrowLeft: [-1, 0], a: [-1, 0], ArrowRight: [1, 0], d: [1, 0] }[e.key];
-        if (m) { e.preventDefault(); mv(...m); }
-      });
-
-      add(); add(); upd();
-    };
-
-    mount();
-  }
-});
-
-// ==========================================
-// 2. WEITERE DIREKT SPIELBARE MODULE
-// ==========================================
-
-registerGame({
-  id: 'orakel',
-  title: 'Orakel',
-  icon: '🎡',
-  cat: 'Partyspiele',
-  desc: 'Eigene Fragen eingeben und das Glücksrad auf eine Person aus der Runde zeigen lassen.',
-  run({ body, status }) {
-    const { trackRaf } = makeRuntime();
-    const wrap = $('div', null, `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:center;width:100%;max-width:920px">
-        <div style="display:flex;flex-direction:column;align-items:center;gap:12px">
-          <div style="font-size:24px">▼</div>
-          <canvas id="ora-cv" width="320" height="320" style="max-width:100%;border-radius:50%"></canvas>
-          <button id="ora-spin" class="sz-btn sz-btn-primary">Glücksrad drehen</button>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <label class="sz-field">
-            <span>Orakel-Frage</span>
-            <input id="ora-q" type="text" value="Wer landet am ehesten auf der Straße?" />
-          </label>
-          <label class="sz-field">
-            <span>Teilnehmende (kommagetrennt)</span>
-            <input id="ora-names" type="text" value="${SZ.group.join(', ')}" />
-          </label>
-          <div id="ora-res" style="padding:14px;border-radius:12px;background:var(--sz-surface-2);font-size:17px;font-weight:700;min-height:54px">
-            Bereit für die nächste Frage.
-          </div>
-        </div>
-      </div>
-    `);
+    const wrap = $('div', 'sz-mj-grid');
     body.append(wrap);
 
-    const cv = wrap.querySelector('#ora-cv');
-    const ctx = cv.getContext('2d');
-    const qInput = wrap.querySelector('#ora-q');
-    const nInput = wrap.querySelector('#ora-names');
-    const resEl = wrap.querySelector('#ora-res');
-    const spinBtn = wrap.querySelector('#ora-spin');
-    let angle = 0, spinning = 0;
-    const palette = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
-
-    const getList = () => {
-      const arr = nInput.value.split(',').map((s) => s.trim()).filter(Boolean);
-      return arr.length >= 2 ? arr : ['Spieler 1', 'Spieler 2'];
-    };
-
-    const drawWheel = () => {
-      const list = getList();
-      const step = (Math.PI * 2) / list.length;
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      const cx = cv.width / 2, cy = cv.height / 2, r = cx - 6;
-      list.forEach((name, idx) => {
-        const a0 = angle + idx * step, a1 = a0 + step;
-        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, a0, a1); ctx.closePath();
-        ctx.fillStyle = palette[idx % palette.length]; ctx.fill();
-        ctx.save(); ctx.translate(cx, cy); ctx.rotate(a0 + step / 2);
-        ctx.fillStyle = '#fff'; ctx.font = '800 15px ui-rounded, system-ui, sans-serif'; ctx.textAlign = 'right';
-        ctx.fillText(name.slice(0, 14), r - 14, 5); ctx.restore();
-      });
-      ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI * 2); ctx.fillStyle = '#0f1324'; ctx.fill();
-    };
-
-    spinBtn.onclick = () => {
-      if (spinning) return;
-      spinning = 1;
-      const list = getList(), start = performance.now(), duration = 2200, startAngle = angle;
-      const extra = Math.PI * 8 + Math.random() * Math.PI * 2;
-      const stepFrame = (now) => {
-        const t = Math.min(1, (now - start) / duration);
-        angle = startAngle + extra * (1 - Math.pow(1 - t, 3));
-        drawWheel();
-        if (t < 1) trackRaf(requestAnimationFrame(stepFrame));
-        else {
-          spinning = 0;
-          const step = (Math.PI * 2) / list.length;
-          const pointerAngle = ((Math.PI * 1.5 - angle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
-          const winner = list[Math.floor(pointerAngle / step) % list.length];
-          resEl.textContent = `🔮 ${qInput.value.trim() || 'Das Orakel sagt:'} → ${winner}!`;
-          status.textContent = `Ergebnis: ${winner}`;
-        }
-      };
-      trackRaf(requestAnimationFrame(stepFrame));
-    };
-
-    nInput.oninput = drawWheel;
-    drawWheel();
-  }
-});
-
-registerGame({
-  id: 'sand-fall',
-  title: 'Sand Fall',
-  icon: '⏳',
-  cat: 'Simulation',
-  desc: 'Lass bunten Sand rieseln und ziehe Barrieren auf dem Feld.',
-  run({ body, status }) {
-    const { trackRaf } = makeRuntime();
-    const W = 120, H = 80, scale = 6;
-    const cv = $('canvas', null);
-    cv.width = W * scale; cv.height = H * scale;
-    cv.style.cssText = 'max-width:100%;border-radius:12px;touch-action:none';
-
-    let mode = 'sand';
-    const sandBtn = $('button', 'sz-btn sz-btn-primary', 'Sand');
-    const wallBtn = $('button', 'sz-btn sz-btn-ghost', 'Wand');
-    const clrBtn = $('button', 'sz-btn sz-btn-ghost', 'Leeren');
-    const setMode = (m) => {
-      mode = m;
-      sandBtn.className = 'sz-btn ' + (m === 'sand' ? 'sz-btn-primary' : 'sz-btn-ghost');
-      wallBtn.className = 'sz-btn ' + (m === 'wall' ? 'sz-btn-primary' : 'sz-btn-ghost');
-    };
-    sandBtn.onclick = () => setMode('sand');
-    wallBtn.onclick = () => setMode('wall');
-
-    const box = $('div', null, '');
-    box.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;width:100%';
-    box.append($('div', 'sz-controls', ''), cv);
-    box.firstChild.append(sandBtn, wallBtn, clrBtn);
-    body.append(box);
-
-    const ctx = cv.getContext('2d');
-    let grid = Array.from({ length: H }, () => Array(W).fill(0));
-    clrBtn.onclick = () => { grid = Array.from({ length: H }, () => Array(W).fill(0)); };
-
-    let pointerDown = false;
-    const paintAt = (e) => {
-      const rect = cv.getBoundingClientRect();
-      const gx = Math.floor(((e.clientX - rect.left) / rect.width) * W);
-      const gy = Math.floor(((e.clientY - rect.top) / rect.height) * H);
-      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-        const x = gx + dx, y = gy + dy;
-        if (x >= 0 && x < W && y >= 0 && y < H) {
-          if (mode === 'wall') grid[y][x] = -1;
-          else if (grid[y][x] === 0 && Math.random() < 0.7) grid[y][x] = 35 + ((gx * 2 + R(30)) % 45);
-        }
-      }
-    };
-
-    cv.onpointerdown = (e) => { pointerDown = true; cv.setPointerCapture(e.pointerId); paintAt(e); };
-    cv.onpointermove = (e) => { if (pointerDown) paintAt(e); };
-    cv.onpointerup = cv.onpointercancel = () => { pointerDown = false; };
-
-    const loop = () => {
-      for (let y = H - 2; y >= 0; y--) for (let x = 0; x < W; x++) {
-        const v = grid[y][x];
-        if (v > 0) {
-          if (grid[y + 1][x] === 0) { grid[y + 1][x] = v; grid[y][x] = 0; }
-          else {
-            const dir = R(2) ? 1 : -1;
-            if (x + dir >= 0 && x + dir < W && grid[y + 1][x + dir] === 0) { grid[y + 1][x + dir] = v; grid[y][x] = 0; }
-            else if (x - dir >= 0 && x - dir < W && grid[y + 1][x - dir] === 0) { grid[y + 1][x - dir] = v; grid[y][x] = 0; }
-          }
-        }
-      }
-      ctx.fillStyle = '#0b0e1a'; ctx.fillRect(0, 0, cv.width, cv.height);
-      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        const v = grid[y][x];
-        if (v === -1) { ctx.fillStyle = '#64748b'; ctx.fillRect(x * scale, y * scale, scale, scale); }
-        else if (v > 0) { ctx.fillStyle = `hsl(${v} 85% 60%)`; ctx.fillRect(x * scale, y * scale, scale, scale); }
-      }
-      status.textContent = mode === 'sand' ? 'Modus: Sand streuen' : 'Modus: Wände zeichnen';
-      trackRaf(requestAnimationFrame(loop));
-    };
-    trackRaf(requestAnimationFrame(loop));
-  }
-});
-
-registerGame({
-  id: 'oh-h1',
-  title: '0h h1',
-  icon: '🔵',
-  cat: 'Puzzle',
-  desc: 'Fülle jedes Feld mit Rot oder Blau – maximal zwei gleiche direkt nebeneinander.',
-  run({ body, status }) {
-    const N = 6;
-    const solution = [
-      [1,2,1,2,2,1],[2,1,2,1,1,2],[1,1,2,1,2,2],
-      [2,2,1,2,1,1],[1,2,2,1,1,2],[2,1,1,2,2,1]
-    ];
-    const clues = [
-      [1,0,0,2,0,0],[0,0,2,0,0,2],[0,1,0,0,2,0],
-      [2,0,0,2,0,0],[0,0,2,0,1,0],[0,1,0,0,0,1]
-    ];
-    let grid = clues.map((r) => [...r]);
-    const wrap = $('div', null, '');
-    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(6,54px);gap:8px';
-
-    const checkBoard = () => {
-      if (grid.every((r, y) => r.every((v, x) => v === solution[y][x]))) status.textContent = '🎉 Rätsel gelöst!';
-      else {
-        const open = grid.flat().filter((v) => v === 0).length;
-        status.textContent = open ? `Noch ${open} Felder offen` : 'Prüfe Reihen & Nachbarn (max. 2 gleich)';
-      }
+    const isFree = (idx) => {
+      if (!board[idx]) return false;
+      const c = idx % COLS;
+      const leftFree = c === 0 || !board[idx - 1];
+      const rightFree = c === COLS - 1 || !board[idx + 1];
+      return leftFree || rightFree;
     };
 
     const render = () => {
       wrap.innerHTML = '';
-      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-        const locked = clues[y][x] !== 0, val = grid[y][x];
-        const btn = $('button', 'sz-btn', locked ? '🔒' : '');
-        btn.style.cssText = `width:54px;height:54px;border-radius:12px;padding:0;font-size:14px;background:${
-          val === 1 ? '#ef4444' : val === 2 ? '#3b82f6' : '#28325c'
-        }`;
-        if (!locked) btn.onclick = () => { grid[y][x] = (grid[y][x] + 1) % 3; render(); checkBoard(); };
+      board.forEach((sym, idx) => {
+        const cls = 'sz-mj-tile' + (!sym ? ' gone' : '') + (selected === idx ? ' sel' : '');
+        const btn = $('button', cls, sym || '');
+        btn.onclick = () => {
+          if (!sym) return;
+          if (!isFree(idx)) {
+            status.textContent = 'Kachel ist seitlich blockiert';
+            return;
+          }
+          if (selected === null) {
+            selected = idx;
+            status.textContent = 'Zweite passende Kachel wählen';
+          } else if (selected === idx) {
+            selected = null;
+            status.textContent = 'Auswahl aufgehoben';
+          } else if (board[selected] === sym) {
+            board[selected] = null;
+            board[idx] = null;
+            selected = null;
+            matched += 2;
+            status.textContent = matched === board.length
+              ? '🏆 Alle Paare abgeräumt!'
+              : `Paar entfernt! (${matched}/${board.length})`;
+          } else {
+            selected = idx;
+            status.textContent = 'Kein Paar – neue Kachel gewählt';
+          }
+          render();
+        };
         wrap.append(btn);
-      }
-    };
-
-    body.append(wrap);
-    render();
-    checkBoard();
-  }
-});
-
-registerGame({
-  id: 'laengen-schaetzen',
-  title: 'Linien-Schätzer (kalibriert)',
-  icon: '📏',
-  cat: 'Alltag & Wissen',
-  desc: 'Einmal den Bildschirm kalibrieren und danach angezeigte Linienlängen in cm schätzen.',
-  run({ body, status }) {
-    let pxPerCm = Number(localStorage.getItem('sz_px_per_cm') || 38);
-    let targetCm = 8;
-
-    const wrap = $('div', null, `
-      <div style="display:flex;flex-direction:column;gap:16px;width:100%;max-width:720px;align-items:center">
-        <div style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-          <label class="sz-field" style="flex:1;min-width:220px">
-            <span>Kalibrierung (Pixel pro cm, aktuell ${pxPerCm.toFixed(1)} px/cm):</span>
-            <input id="cal-range" type="range" min="25" max="65" step="0.5" value="${pxPerCm}" />
-          </label>
-          <button id="new-line" class="sz-btn sz-btn-ghost">Neue Linie</button>
-        </div>
-        <div style="width:100%;min-height:90px;display:flex;align-items:center;justify-content:center;background:var(--sz-bg);border-radius:12px;padding:16px">
-          <div id="line-bar" style="height:6px;border-radius:999px;background:#38bdf8"></div>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <input id="guess-cm" type="number" step="0.5" min="1" max="30" placeholder="Schätzung in cm" style="width:150px;padding:10px;border-radius:10px;border:1px solid var(--sz-border);background:var(--sz-bg);color:var(--sz-text);font-size:16px" />
-          <button id="check-cm" class="sz-btn sz-btn-primary">Prüfen</button>
-          <span id="cm-fb" style="font-weight:700"></span>
-        </div>
-      </div>
-    `);
-    body.append(wrap);
-
-    const rangeEl = wrap.querySelector('#cal-range');
-    const lineEl = wrap.querySelector('#line-bar');
-    const guessEl = wrap.querySelector('#guess-cm');
-    const fbEl = wrap.querySelector('#cm-fb');
-
-    const drawLine = () => {
-      lineEl.style.width = Math.round(targetCm * pxPerCm) + 'px';
-      fbEl.textContent = '';
-      guessEl.value = '';
-      status.textContent = `Kalibriert: ${pxPerCm.toFixed(1)} px/cm`;
-    };
-
-    const nextLine = () => { targetCm = (4 + R(17)) + (R(2) ? 0.5 : 0); drawLine(); };
-
-    rangeEl.oninput = () => {
-      pxPerCm = parseFloat(rangeEl.value);
-      try { localStorage.setItem('sz_px_per_cm', String(pxPerCm)); } catch (_) {}
-      drawLine();
-    };
-
-    wrap.querySelector('#new-line').onclick = nextLine;
-    wrap.querySelector('#check-cm').onclick = () => {
-      const val = parseFloat(guessEl.value);
-      if (Number.isNaN(val)) return;
-      fbEl.textContent = `Echt: ${targetCm.toFixed(1)} cm (Abweichung: ${Math.abs(val - targetCm).toFixed(1)} cm)`;
-    };
-
-    nextLine();
-  }
-});
-
-// ==========================================
-// 3. WEITERE AUSGEBAUTE WUNSCHLISTENTITEL
-// ==========================================
-
-registerGame({
-  id: 'mastermind',
-  title: 'Mastermind',
-  icon: '🎯',
-  cat: 'Puzzle',
-  desc: 'Knacke den geheimen 4er-Farbcode in 8 Versuchen. Grün = Farbe & Platz richtig, Gelb = richtige Farbe, falscher Platz.',
-  run({ body, status }) {
-    const COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
-    const MAX_TRIES = 8;
-    const secret = Array.from({ length: 4 }, () => COLORS[R(COLORS.length)]);
-    let guesses = [];
-    let current = [COLORS[0], COLORS[1], COLORS[2], COLORS[3]];
-    let activeSlot = 0;
-    let over = false;
-
-    const wrap = $('div', 'sz-mm');
-    const historyEl = $('div', null, '');
-    historyEl.style.cssText = 'display:flex;flex-direction:column;gap:8px;max-height:280px;overflow:auto';
-
-    const pickerRow = $('div', 'sz-mm-row');
-    const slotButtons = [];
-    for (let i = 0; i < 4; i++) {
-      const btn = $('button', 'sz-peg');
-      btn.onclick = () => { activeSlot = i; render(); };
-      slotButtons.push(btn);
-    }
-    const checkBtn = $('button', 'sz-btn sz-btn-primary', 'Prüfen');
-
-    const paletteRow = $('div', 'sz-mm-row');
-    COLORS.forEach((col) => {
-      const p = $('button', 'sz-peg');
-      p.style.background = col;
-      p.onclick = () => {
-        if (over) return;
-        current[activeSlot] = col;
-        activeSlot = (activeSlot + 1) % 4;
-        render();
-      };
-      paletteRow.append(p);
-    });
-
-    const evaluate = (guess) => {
-      let exact = 0;
-      const sRem = [], gRem = [];
-      for (let i = 0; i < 4; i++) {
-        if (guess[i] === secret[i]) exact++;
-        else { sRem.push(secret[i]); gRem.push(guess[i]); }
-      }
-      let near = 0;
-      gRem.forEach((c) => {
-        const idx = sRem.indexOf(c);
-        if (idx >= 0) { near++; sRem.splice(idx, 1); }
       });
-      return { exact, near };
     };
 
-    checkBtn.onclick = () => {
-      if (over) return;
-      const res = evaluate(current);
-      guesses.push({ guess: [...current], ...res });
-      if (res.exact === 4) {
-        over = true;
-        status.textContent = `🎉 Code in ${guesses.length} Versuchen geknackt!`;
-      } else if (guesses.length >= MAX_TRIES) {
-        over = true;
-        status.textContent = 'Keine Versuche mehr – Code wurde nicht geknackt.';
+    status.textContent = 'Wähle zwei gleiche freie Kacheln';
+    render();
+  }
+});
+
+// ==========================================
+// 2. POKER (5-Card-Draw gegen Computer)
+// ==========================================
+registerGame({
+  id: 'poker',
+  title: 'Poker',
+  icon: '🃏',
+  cat: 'Karten & Strategie',
+  desc: 'Wähle Karten zum Behalten, tausche den Rest und vergleiche deine Hand gegen den Computer.',
+  run({ body, status }) {
+    const SUITS = ['♠', '♥', '♦', '♣'];
+    const RANKS = [7, 8, 9, 10, 11, 12, 13, 14];
+    const RLABEL = { 7: '7', 8: '8', 9: '9', 10: '10', 11: 'B', 12: 'D', 13: 'K', 14: 'A' };
+
+    const makeDeck = () => {
+      const d = [];
+      for (const s of SUITS) for (const r of RANKS) d.push({ s, r });
+      return d.sort(() => Math.random() - 0.5);
+    };
+
+    const scoreHand = (hand) => {
+      const counts = {};
+      hand.forEach((c) => { counts[c.r] = (counts[c.r] || 0) + 1; });
+      const vals = Object.values(counts).sort((a, b) => b - a);
+      const flush = hand.every((c) => c.s === hand[0].s);
+      const high = Math.max(...hand.map((c) => c.r));
+      if (flush) return { rank: 5, name: 'Flush', high };
+      if (vals[0] === 4) return { rank: 7, name: 'Vierling', high };
+      if (vals[0] === 3 && vals[1] === 2) return { rank: 6, name: 'Full House', high };
+      if (vals[0] === 3) return { rank: 4, name: 'Drilling', high };
+      if (vals[0] === 2 && vals[1] === 2) return { rank: 3, name: 'Zwei Paare', high };
+      if (vals[0] === 2) return { rank: 2, name: 'Ein Paar', high };
+      return { rank: 1, name: 'Höchste Karte', high };
+    };
+
+    let deck = makeDeck();
+    let player = deck.splice(0, 5);
+    let ai = deck.splice(0, 5);
+    let holds = [true, true, true, true, true];
+    let drawn = false;
+
+    const wrap = $('div', 'sz-pk-wrap');
+    const aiInfo = $('div', null, '');
+    const handEl = $('div', 'sz-pk-hand');
+    const actionBtn = $('button', 'sz-btn sz-btn-primary', 'Ausgewählte tauschen');
+    wrap.append(aiInfo, handEl, actionBtn);
+    body.append(wrap);
+
+    const renderCard = (c, idx, interactive) => {
+      const isRed = c.s === '♥' || c.s === '♦';
+      const el = $('button', 'sz-pk-card' + (isRed ? ' red' : '') + (interactive && holds[idx] ? ' hold' : ''),
+        `<span>${RLABEL[c.r]}</span><span style="font-size:22px">${c.s}</span>` + (interactive ? `<small style="font-size:10px">${holds[idx] ? 'HALTEN' : 'TAUSCH'}</small>` : '')
+      );
+      if (interactive) {
+        el.onclick = () => {
+          if (drawn) return;
+          holds[idx] = !holds[idx];
+          render();
+        };
       } else {
-        status.textContent = `Versuch ${guesses.length + 1} von ${MAX_TRIES}`;
+        el.style.cursor = 'default';
       }
+      return el;
+    };
+
+    const render = () => {
+      handEl.innerHTML = '';
+      player.forEach((c, i) => handEl.append(renderCard(c, i, true)));
+
+      if (!drawn) {
+        aiInfo.textContent = 'Computer hält 5 verdeckte Karten';
+        actionBtn.textContent = 'Ausgewählte tauschen';
+        status.textContent = 'Tippe auf Karten zum Tauschen/Halten';
+      } else {
+        const pSc = scoreHand(player);
+        const aSc = scoreHand(ai);
+        aiInfo.innerHTML = `<div style="margin-bottom:6px">Computer (${aSc.name}):</div><div style="display:flex;gap:8px;justify-content:center">${ai.map((c) => renderCard(c, 0, false).outerHTML).join('')}</div>`;
+        actionBtn.textContent = 'Neue Runde';
+        if (pSc.rank > aSc.rank || (pSc.rank === aSc.rank && pSc.high > aSc.high)) {
+          status.textContent = `🏆 Du gewinnst mit ${pSc.name} gegen ${aSc.name}!`;
+        } else if (aSc.rank > pSc.rank || (aSc.rank === pSc.rank && aSc.high > pSc.high)) {
+          status.textContent = `🤖 Computer gewinnt mit ${aSc.name} gegen ${pSc.name}.`;
+        } else {
+          status.textContent = `Unentschieden (${pSc.name})!`;
+        }
+      }
+    };
+
+    actionBtn.onclick = () => {
+      if (!drawn) {
+        player = player.map((c, i) => (holds[i] ? c : deck.pop() || c));
+        ai = ai.map((c) => (scoreHand(ai).rank >= 2 ? c : deck.pop() || c));
+        drawn = true;
+        render();
+      } else {
+        deck = makeDeck();
+        player = deck.splice(0, 5);
+        ai = deck.splice(0, 5);
+        holds = [true, true, true, true, true];
+        drawn = false;
+        render();
+      }
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 3. FUSSBALL
+// ==========================================
+registerGame({
+  id: 'fussball',
+  title: 'Fußball',
+  icon: '⚽',
+  cat: 'Sport & Action',
+  desc: 'Steuere deinen Spieler mit Finger, Maus oder Pfeiltasten/WASD und schieße Tore ins rechte Tor.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 520, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let px = 110, py = H / 2;
+    let ball = { x: W / 2, y: H / 2, vx: 0, vy: 0, r: 10 };
+    let goals = 0, shots = 0;
+
+    const resetBall = () => {
+      ball = { x: W / 2, y: H / 2, vx: 0, vy: 0, r: 10 };
+      px = 110; py = H / 2;
+    };
+
+    const moveTo = (clientX, clientY) => {
+      const rect = cv.getBoundingClientRect();
+      px = Math.max(24, Math.min(W - 24, ((clientX - rect.left) / rect.width) * W));
+      py = Math.max(24, Math.min(H - 24, ((clientY - rect.top) / rect.height) * H));
+    };
+
+    cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); moveTo(e.clientX, e.clientY); };
+    cv.onpointermove = (e) => { if (e.buttons || e.pointerType === 'touch') moveTo(e.clientX, e.clientY); };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', 'ArrowUp', 'w', 'ArrowDown', 's']);
+
+    const loop = () => {
+      if (keys.ArrowLeft || keys.a) px = Math.max(24, px - 5);
+      if (keys.ArrowRight || keys.d) px = Math.min(W - 24, px + 5);
+      if (keys.ArrowUp || keys.w) py = Math.max(24, py - 5);
+      if (keys.ArrowDown || keys.s) py = Math.min(H - 24, py + 5);
+
+      const dx = ball.x - px, dy = ball.y - py;
+      const dist = Math.hypot(dx, dy);
+      if (dist < ball.r + 16 && dist > 0) {
+        ball.vx = (dx / dist) * 6.8;
+        ball.vy = (dy / dist) * 6.8;
+        shots++;
+      }
+
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+      ball.vx *= 0.975;
+      ball.vy *= 0.975;
+
+      if (ball.y - ball.r < 16) { ball.y = 16 + ball.r; ball.vy *= -0.85; }
+      if (ball.y + ball.r > H - 16) { ball.y = H - 16 - ball.r; ball.vy *= -0.85; }
+      if (ball.x - ball.r < 16) { ball.x = 16 + ball.r; ball.vx *= -0.85; }
+
+      if (ball.x + ball.r > W - 16) {
+        if (ball.y > 105 && ball.y < 215) {
+          goals++;
+          status.textContent = `⚽ TOR! Tore: ${goals} · Schüsse: ${shots}`;
+          resetBall();
+        } else {
+          ball.x = W - 16 - ball.r;
+          ball.vx *= -0.85;
+        }
+      }
+
+      ctx.fillStyle = '#14532d';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(16, 16, W - 32, H - 32);
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.fillRect(W - 28, 105, 12, 110);
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath(); ctx.arc(px, py, 16, 0, Math.PI * 2); ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `Tore: 0 · Schüsse: 0 · Ball ins rechte Tor schießen`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 4. SCHLAGENSPIEL
+// ==========================================
+registerGame({
+  id: 'schlagenspiel',
+  title: 'Schlagenspiel',
+  icon: '🥊',
+  cat: 'Action',
+  desc: 'Schlage zu, wenn der Gegner ungedeckt ist, und blocke, wenn er ausholt!',
+  run({ body, status }) {
+    const { later } = makeRuntime();
+    let myHp = 100, aiHp = 100, aiTelegraph = false, over = false;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:16px;width:100%;max-width:540px;text-align:center';
+
+    const barsEl = $('div', null, '');
+    barsEl.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:14px;width:100%';
+    const arenaEl = $('div', null, '');
+    arenaEl.style.cssText = 'padding:28px 18px;border-radius:16px;background:var(--sz-surface-2);width:100%;font-size:20px;font-weight:800';
+    const btnsEl = $('div', null, '');
+    btnsEl.style.cssText = 'display:flex;gap:14px;justify-content:center;flex-wrap:wrap';
+
+    const hitBtn = $('button', 'sz-btn sz-btn-primary', '🥊 Schlag');
+    const blkBtn = $('button', 'sz-btn sz-btn-ghost', '🛡️ Block');
+    btnsEl.append(hitBtn, blkBtn);
+    wrap.append(barsEl, arenaEl, btnsEl);
+    body.append(wrap);
+
+    const render = (msg) => {
+      barsEl.innerHTML = `
+        <div style="background:var(--sz-bg);padding:10px;border-radius:12px">Du: <strong>${Math.max(0, myHp)} HP</strong></div>
+        <div style="background:var(--sz-bg);padding:10px;border-radius:12px">Gegner: <strong>${Math.max(0, aiHp)} HP</strong></div>
+      `;
+      arenaEl.textContent = msg || (aiTelegraph ? '⚠️ Gegner holt aus – BLOCKEN!' : '🥊 Gegner offen – SCHLAGEN!');
+    };
+
+    const scheduleAi = () => {
+      if (over) return;
+      later(() => {
+        if (over) return;
+        aiTelegraph = true;
+        render('⚠️ Gegner holt aus – BLOCKEN!');
+        later(() => {
+          if (over) return;
+          aiTelegraph = false;
+          render('🥊 Gegner offen – SCHLAGEN!');
+        }, 900);
+        scheduleAi();
+      }, 1500 + R(900));
+    };
+
+    const endGame = () => {
+      if (aiHp <= 0 || myHp <= 0) {
+        over = true;
+        status.textContent = aiHp <= 0 ? '🏆 Du hast gewonnen!' : '💥 K.O. – Gegner gewinnt!';
+      }
+    };
+
+    hitBtn.onclick = () => {
+      if (over) return;
+      if (aiTelegraph) {
+        myHp -= 18;
+        render('✖ Konter! Gegner hat dich beim Ausholen erwischt.');
+      } else {
+        aiHp -= 20;
+        render('✔ Volltreffer! -20 HP beim Gegner.');
+      }
+      endGame();
+    };
+
+    blkBtn.onclick = () => {
+      if (over) return;
+      if (aiTelegraph) {
+        aiTelegraph = false;
+        aiHp -= 8;
+        render('🛡️ Sauber geblockt! Gegenangriff -8 HP.');
+      } else {
+        render('🛡️ Deckung gehalten.');
+      }
+      endGame();
+    };
+
+    status.textContent = 'Schlagen wenn offen, Blocken wenn Gegner ausholt';
+    render();
+    scheduleAi();
+  }
+});
+
+// ==========================================
+// 5. FRUCHTSPIEL
+// ==========================================
+registerGame({
+  id: 'fruchtspiel',
+  title: 'Fruchtspiel',
+  icon: '🍉',
+  cat: 'Puzzle',
+  desc: 'Wähle eine Spalte, um Früchte fallen zu lassen – gleiche Früchte verschmelzen zur nächsten Stufe.',
+  run({ body, status }) {
+    const COLS = 5, ROWS = 5;
+    const FRUITS = ['🍒', '🍓', '🍊', '🍎', '🍍', '🍉'];
+    let grid = Array.from({ length: ROWS }, () => Array(COLS).fill(-1));
+    let nextLevel = R(3);
+    let score = 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const boardEl = $('div', null, '');
+    boardEl.style.cssText = `display:grid;grid-template-columns:repeat(${COLS},54px);gap:6px;background:var(--sz-surface-2);padding:10px;border-radius:14px`;
+    wrap.append(boardEl);
+    body.append(wrap);
+
+    const dropInCol = (c) => {
+      let row = -1;
+      for (let r = ROWS - 1; r >= 0; r--) {
+        if (grid[r][c] === -1) { row = r; break; }
+      }
+      if (row === -1) {
+        status.textContent = 'Spalte voll – andere Spalte wählen';
+        return;
+      }
+      grid[row][c] = nextLevel;
+      const curLvl = nextLevel;
+      if (row + 1 < ROWS && grid[row + 1][c] === curLvl && curLvl + 1 < FRUITS.length) {
+        grid[row][c] = -1;
+        grid[row + 1][c] = curLvl + 1;
+        score += (curLvl + 1) * 15;
+      } else if (c + 1 < COLS && grid[row][c + 1] === curLvl && curLvl + 1 < FRUITS.length) {
+        grid[row][c] = -1;
+        grid[row][c + 1] = curLvl + 1;
+        score += (curLvl + 1) * 15;
+      } else {
+        score += 5;
+      }
+      nextLevel = R(3);
       render();
     };
 
     const render = () => {
-      historyEl.innerHTML = '';
-      guesses.forEach((g, idx) => {
-        const row = $('div', 'sz-mm-row');
-        const pegs = $('div', 'sz-mm-pegs');
-        g.guess.forEach((c) => {
-          const d = $('span', 'sz-peg');
-          d.style.background = c;
-          d.style.cursor = 'default';
-          pegs.append(d);
-        });
-        const hints = $('div', 'sz-mm-hints');
-        for (let h = 0; h < 4; h++) {
-          const dot = $('span', 'sz-hint-dot' + (h < g.exact ? ' exact' : h < g.exact + g.near ? ' near' : ''));
-          hints.append(dot);
-        }
-        row.append($('span', null, `#${idx + 1}`), pegs, hints);
-        historyEl.append(row);
-      });
-
-      pickerRow.innerHTML = '';
-      slotButtons.forEach((btn, i) => {
-        btn.style.background = current[i];
-        btn.style.outline = i === activeSlot ? '3px solid #fff' : 'none';
-        pickerRow.append(btn);
-      });
-      pickerRow.append(checkBtn);
-      checkBtn.disabled = over;
+      boardEl.innerHTML = '';
+      for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+        const lvl = grid[r][c];
+        const cell = $('button', 'sz-btn', lvl >= 0 ? FRUITS[lvl] : '');
+        cell.style.cssText = 'width:54px;height:54px;padding:0;font-size:26px;background:var(--sz-bg);border-radius:10px';
+        cell.onclick = () => dropInCol(c);
+        boardEl.append(cell);
+      }
+      status.textContent = `Punkte: ${score} · Nächste Frucht: ${FRUITS[nextLevel]}`;
     };
 
-    wrap.append(historyEl, pickerRow, paletteRow);
-    body.append(wrap);
-    status.textContent = `Versuch 1 von ${MAX_TRIES}`;
     render();
   }
 });
 
+// ==========================================
+// 6. FARBIGE SCHRAUBEN
+// ==========================================
 registerGame({
-  id: 'farben-verbinden',
-  title: 'Farben verbinden',
-  icon: '🔗',
+  id: 'farbige-schrauben',
+  title: 'Farbige Schrauben',
+  icon: '🔩',
   cat: 'Puzzle',
-  desc: 'Verbinde gleichfarbige Punkte auf dem 5×5-Feld, ohne dass sich Wege kreuzen.',
+  desc: 'Tippe auf eine Halterung, um die oberste Schraube in eine andere Halterung zu bewegen.',
   run({ body, status }) {
-    const N = 5;
-    const endpoints = {
-      0: 1, 22: 1,
-      2: 2, 17: 2,
-      6: 3, 18: 3,
-      10: 4, 24: 4
-    };
-    const palette = { 1: '#ef4444', 2: '#22c55e', 3: '#3b82f6', 4: '#eab308' };
-    let owner = Array(N * N).fill(0);
-    Object.entries(endpoints).forEach(([idx, col]) => { owner[Number(idx)] = col; });
+    const COLORS = { r: '#ef4444', b: '#3b82f6', g: '#22c55e' };
+    let cols = [
+      ['r', 'b', 'g'],
+      ['g', 'r', 'b'],
+      ['b', 'g', 'r'],
+      []
+    ];
+    let selCol = null;
 
-    let activeColor = 0;
-    let drawing = false;
-    const gridEl = $('div', 'sz-fn-grid');
-    body.append(gridEl);
+    const wrap = $('div', 'sz-sc-wrap');
+    body.append(wrap);
 
     const checkWin = () => {
-      const pairs = [1, 2, 3, 4];
-      const ok = pairs.every((c) => {
-        const ends = Object.entries(endpoints).filter(([, v]) => v === c).map(([k]) => Number(k));
-        return ends.length === 2 && owner[ends[0]] === c && owner[ends[1]] === c && owner.includes(c);
-      });
-      if (ok && owner.every((v) => v > 0)) {
-        status.textContent = '🎉 Alle Farben perfekt verbunden!';
-      } else {
-        status.textContent = activeColor ? `Verbinde Farbe ${activeColor}…` : 'Ziehe oder tippe von einem Farbpunkt aus';
-      }
-    };
-
-    const paintCell = (idx) => {
-      if (!drawing || !activeColor) return;
-      const ep = endpoints[idx];
-      if (ep && ep !== activeColor) return;
-      if (owner[idx] && owner[idx] !== activeColor && !ep) return;
-      owner[idx] = activeColor;
-      render();
-      checkWin();
+      const done = cols.every((col) => col.length === 0 || (col.length === 3 && col.every((x) => x === col[0])));
+      status.textContent = done
+        ? '🎉 Alle Schrauben sauber sortiert!'
+        : (selCol !== null ? `Halterung #${selCol + 1} gewählt` : 'Wähle eine Halterung');
     };
 
     const render = () => {
-      gridEl.innerHTML = '';
-      for (let i = 0; i < N * N; i++) {
-        const cell = $('div', 'sz-fn-cell');
-        const c = owner[i];
-        if (c) cell.style.background = palette[c] + '33';
-        if (endpoints[i]) {
-          const dot = $('span', 'sz-fn-dot');
-          dot.style.background = palette[endpoints[i]];
-          cell.append(dot);
-        }
-        cell.onpointerdown = () => {
-          const ep = endpoints[i];
-          if (ep) {
-            activeColor = ep;
-            drawing = true;
-            owner = owner.map((v, k) => (v === ep && !endpoints[k] ? 0 : v));
-            render();
-            checkWin();
-          } else if (activeColor) {
-            drawing = true;
-            paintCell(i);
+      wrap.innerHTML = '';
+      cols.forEach((col, idx) => {
+        const box = $('button', 'sz-sc-col' + (selCol === idx ? ' sel' : ''));
+        col.forEach((cKey) => {
+          const bolt = $('span', 'sz-sc-bolt');
+          bolt.style.background = COLORS[cKey];
+          box.append(bolt);
+        });
+        box.onclick = () => {
+          if (selCol === null) {
+            if (col.length) selCol = idx;
+          } else if (selCol === idx) {
+            selCol = null;
+          } else {
+            const mover = cols[selCol][cols[selCol].length - 1];
+            if (mover && cols[idx].length < 3) {
+              cols[selCol].pop();
+              cols[idx].push(mover);
+            }
+            selCol = null;
           }
+          render();
+          checkWin();
         };
-        cell.onpointerenter = () => { if (drawing) paintCell(i); };
-        gridEl.append(cell);
-      }
+        wrap.append(box);
+      });
     };
 
-    window.addEventListener('pointerup', () => { drawing = false; });
     render();
     checkWin();
   }
 });
 
+// ==========================================
+// 7. LABYRINTH MALEN
+// ==========================================
 registerGame({
-  id: 'laender-der-welt',
-  title: 'Länder der Welt lernen',
-  icon: '🌍',
-  cat: 'Wissen & Quiz',
-  desc: 'Lerne Flaggen, Hauptstädte und Kontinente von Ländern weltweit.',
+  id: 'labyrinth-malen',
+  title: 'Labyrinth malen',
+  icon: '🌀',
+  cat: 'Puzzle',
+  desc: 'Ziehe oder tippe benachbarte Felder von Start (S) bis zum Ziel (Z) ohne Wände.',
   run({ body, status }) {
-    const COUNTRIES = [
-      { name: 'Deutschland', flag: '🇩🇪', capital: 'Berlin', cont: 'Europa' },
-      { name: 'Japan', flag: '🇯🇵', capital: 'Tokio', cont: 'Asien' },
-      { name: 'Brasilien', flag: '🇧🇷', capital: 'Brasília', cont: 'Südamerika' },
-      { name: 'Kanada', flag: '🇨🇦', capital: 'Ottawa', cont: 'Nordamerika' },
-      { name: 'Australien', flag: '🇦🇺', capital: 'Canberra', cont: 'Australien / Ozeanien' },
-      { name: 'Ägypten', flag: '🇪🇬', capital: 'Kairo', cont: 'Afrika' },
-      { name: 'Norwegen', flag: '🇳🇴', capital: 'Oslo', cont: 'Europa' },
-      { name: 'Italien', flag: '🇮🇹', capital: 'Rom', cont: 'Europa' },
-      { name: 'Indien', flag: '🇮🇳', capital: 'Neu-Delhi', cont: 'Asien' },
-      { name: 'Mexiko', flag: '🇲🇽', capital: 'Mexiko-Stadt', cont: 'Nordamerika' },
-      { name: 'Argentinien', flag: '🇦🇷', capital: 'Buenos Aires', cont: 'Südamerika' },
-      { name: 'Südafrika', flag: '🇿🇦', capital: 'Pretoria', cont: 'Afrika' }
+    const { on } = makeRuntime();
+    const N = 7;
+    const map = [
+      0, 0, 1, 0, 0, 0, 0,
+      1, 0, 1, 0, 1, 1, 0,
+      0, 0, 0, 0, 1, 0, 0,
+      0, 1, 1, 1, 1, 0, 1,
+      0, 0, 0, 0, 0, 0, 0,
+      1, 1, 0, 1, 1, 1, 0,
+      0, 0, 0, 0, 0, 1, 0
     ];
+    const start = 0, goal = N * N - 1;
+    let trail = [start];
+    let painting = false;
 
-    let score = 0, round = 0, current = null, locked = false;
-    const wrap = $('div', null, '');
-    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:640px;text-align:center';
-
-    const flagEl = $('div', null, '');
-    flagEl.style.fontSize = '64px';
-    const qEl = $('h3', null, '');
-    qEl.style.margin = '0';
-    const optsEl = $('div', null, '');
-    optsEl.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:10px;width:100%';
-    const fbEl = $('p', null, '');
-    fbEl.style.cssText = 'min-height:24px;margin:0;font-weight:700';
-
-    wrap.append(flagEl, qEl, optsEl, fbEl);
+    const wrap = $('div', 'sz-lm-grid');
     body.append(wrap);
 
-    const nextQ = () => {
-      locked = false;
-      round++;
-      current = COUNTRIES[R(COUNTRIES.length)];
-      const choices = [current];
-      while (choices.length < 4) {
-        const cand = COUNTRIES[R(COUNTRIES.length)];
-        if (!choices.includes(cand)) choices.push(cand);
-      }
-      choices.sort(() => Math.random() - 0.5);
-
-      flagEl.textContent = current.flag;
-      qEl.textContent = `Welches Land gehört zu Hauptstadt ${current.capital} (${current.cont})?`;
-      fbEl.textContent = '';
-      optsEl.innerHTML = '';
-
-      choices.forEach((c) => {
-        const btn = $('button', 'sz-btn sz-btn-ghost', `${c.flag} ${c.name}`);
-        btn.onclick = () => {
-          if (locked) return;
-          locked = true;
-          if (c.name === current.name) {
-            score++;
-            btn.className = 'sz-btn sz-btn-primary';
-            fbEl.textContent = `✔ Richtig! ${current.name} (${current.capital}, ${current.cont}).`;
-          } else {
-            btn.style.background = '#991b1b';
-            fbEl.textContent = `✖ Gesucht war ${current.flag} ${current.name} (${current.capital}).`;
-          }
-          status.textContent = `Punkte: ${score} · Runde ${round}`;
-          setTimeout(nextQ, 1100);
-        };
-        optsEl.append(btn);
-      });
-      status.textContent = `Punkte: ${score} · Runde ${round}`;
+    const isAdj = (a, b) => {
+      const ar = Math.floor(a / N), ac = a % N;
+      const br = Math.floor(b / N), bc = b % N;
+      return Math.abs(ar - br) + Math.abs(ac - bc) === 1;
     };
 
-    nextQ();
-  }
-});
-
-registerGame({
-  id: 'schiffe-versenken',
-  title: 'Schiffe versenken',
-  icon: '🚢',
-  cat: 'Brettspiele',
-  desc: 'Versenke alle gegnerischen Schiffe auf dem rechten Feld, bevor deine eigene Flotte sinkt.',
-  run({ body, status }) {
-    const N = 6;
-    const placeFleet = () => {
-      const grid = Array(N * N).fill(0);
-      [3, 2, 2].forEach((len) => {
-        let placed = false;
-        for (let guard = 0; guard < 100 && !placed; guard++) {
-          const horiz = R(2) === 0;
-          const r = R(horiz ? N : N - len + 1);
-          const c = R(horiz ? N - len + 1 : N);
-          const cells = [];
-          for (let k = 0; k < len; k++) cells.push((r + (horiz ? 0 : k)) * N + (c + (horiz ? k : 0)));
-          if (cells.every((idx) => grid[idx] === 0)) {
-            cells.forEach((idx) => { grid[idx] = 1; });
-            placed = true;
-          }
-        }
-      });
-      return grid;
-    };
-
-    const myShips = placeFleet();
-    const enemyShips = placeFleet();
-    const myShots = Array(N * N).fill(0);
-    const enemyShots = Array(N * N).fill(0);
-    let over = false;
-
-    const wrap = $('div', 'sz-bs-wrap');
-    const leftBox = $('div', null, '<h4 style="margin:0 0 8px">Deine Flotte</h4>');
-    const rightBox = $('div', null, '<h4 style="margin:0 0 8px">Gegnerisches Meer (tippen zum Schießen)</h4>');
-    const leftGrid = $('div', 'sz-bs-grid');
-    const rightGrid = $('div', 'sz-bs-grid');
-    leftBox.append(leftGrid);
-    rightBox.append(rightGrid);
-    wrap.append(leftBox, rightBox);
-    body.append(wrap);
-
-    const checkEnd = () => {
-      const enemyLeft = enemyShips.some((v, i) => v === 1 && myShots[i] !== 2);
-      const myLeft = myShips.some((v, i) => v === 1 && enemyShots[i] !== 2);
-      if (!enemyLeft) {
-        over = true;
-        status.textContent = '🏆 Alle gegnerischen Schiffe versenkt!';
-        return true;
-      }
-      if (!myLeft) {
-        over = true;
-        status.textContent = '💥 Deine Flotte wurde versenkt!';
-        return true;
-      }
-      return false;
-    };
-
-    const aiShoot = () => {
-      const open = [...Array(N * N).keys()].filter((i) => enemyShots[i] === 0);
-      if (!open.length) return;
-      const pick = open[R(open.length)];
-      enemyShots[pick] = myShips[pick] ? 2 : 1;
+    const stepTo = (idx) => {
+      if (map[idx] === 1) return;
+      const head = trail[trail.length - 1];
+      if (idx === head || trail.includes(idx) || !isAdj(head, idx)) return;
+      trail.push(idx);
       render();
-      checkEnd();
+      status.textContent = idx === goal
+        ? `🎉 Ziel erreicht in ${trail.length - 1} Schritten!`
+        : `Schritte: ${trail.length - 1} · Weiter zum Ziel (Z)`;
     };
 
     const render = () => {
-      leftGrid.innerHTML = '';
-      rightGrid.innerHTML = '';
-
+      wrap.innerHTML = '';
       for (let i = 0; i < N * N; i++) {
-        const lc = $('div', 'sz-bs-cell' + (enemyShots[i] === 2 ? ' hit' : enemyShots[i] === 1 ? ' miss' : myShips[i] ? ' ship' : ''),
-          enemyShots[i] === 2 ? '💥' : enemyShots[i] === 1 ? '·' : myShips[i] ? '⛴' : '');
-        lc.style.display = 'grid';
-        lc.style.placeItems = 'center';
-        leftGrid.append(lc);
-
-        const rc = $('button', 'sz-bs-cell' + (myShots[i] === 2 ? ' hit' : myShots[i] === 1 ? ' miss' : ''),
-          myShots[i] === 2 ? '💥' : myShots[i] === 1 ? '·' : '');
-        rc.onclick = () => {
-          if (over || myShots[i] !== 0) return;
-          myShots[i] = enemyShips[i] ? 2 : 1;
-          render();
-          if (!checkEnd()) {
-            status.textContent = 'Computer schießt…';
-            setTimeout(() => {
-              if (!over) {
-                aiShoot();
-                if (!over) status.textContent = 'Du bist dran – wähle ein Feld rechts';
-              }
-            }, 350);
-          }
-        };
-        rightGrid.append(rc);
+        const isWall = map[i] === 1;
+        const onPath = trail.includes(i);
+        const label = i === start ? 'S' : i === goal ? 'Z' : '';
+        const cls = 'sz-lm-cell' + (isWall ? ' wall' : '') + (onPath ? ' path' : '') + (i === goal ? ' goal' : '');
+        const cell = $('button', cls, label);
+        cell.onpointerdown = () => { painting = true; stepTo(i); };
+        cell.onpointerenter = () => { if (painting) stepTo(i); };
+        wrap.append(cell);
       }
     };
 
-    status.textContent = 'Du bist dran – wähle ein Feld rechts';
+    on(window, 'pointerup', () => { painting = false; });
+    status.textContent = 'Von S nach Z ziehen oder tippen';
     render();
   }
 });
 
+// ==========================================
+// 8. WER BIN ICH?
+// ==========================================
 registerGame({
-  id: 'brick-out',
-  title: 'Brick Out - Stein Brecher',
-  icon: '🧱',
-  cat: 'Action',
-  desc: 'Lenke den Schläger mit Finger, Maus oder Pfeiltasten und zerschlage alle Steine.',
+  id: 'wer-bin-ich',
+  title: 'Wer bin ich?',
+  icon: '❓',
+  cat: 'Partyspiele',
+  desc: 'Lies die Hinweise und errate, wer oder was gesucht ist.',
   run({ body, status }) {
-    const { trackRaf, setKey } = makeRuntime();
-    const W = 520, H = 380;
-    const cv = $('canvas', 'sz-brk-cv');
+    const CARDS = [
+      { answer: 'Pinguin', hints: ['Ich bin ein Vogel, kann aber nicht fliegen.', 'Ich schwimme blitzschnell im kalten Wasser.', 'Ich trage Schwarz-Weiß.'] },
+      { answer: 'Vulkan', hints: ['Ich schlafe manchmal jahrelang ruhig.', 'Wenn ich ausbreche, fließt heiße Lava.', 'Ich habe oft einen Krater an der Spitze.'] },
+      { answer: 'Kompass', hints: ['Ich brauche keinen Strom für meine Arbeit.', 'Meine Nadel zeigt nach Norden.', 'Seefahrer und Wanderer nutzen mich.'] },
+      { answer: 'Chamäleon', hints: ['Ich bewege meine Augen unabhängig voneinander.', 'Ich kann meine Hautfarbe anpassen.', 'Ich fange Insekten mit einer langen Zunge.'] }
+    ];
+
+    let idx = 0, hintCount = 1, score = 0;
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:560px;text-align:center';
+
+    const cardBox = $('div', null, '');
+    cardBox.style.cssText = 'padding:20px;border-radius:16px;background:var(--sz-surface-2);width:100%';
+    const ansEl = $('div', null, '');
+    ansEl.style.cssText = 'font-size:24px;font-weight:900;margin-top:12px;color:#a3e635';
+
+    const actions = $('div', null, '');
+    actions.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    const nextHintBtn = $('button', 'sz-btn sz-btn-ghost', 'Nächster Hinweis');
+    const revealBtn = $('button', 'sz-btn sz-btn-primary', 'Auflösen (+1 Punkt)');
+    const nextCardBtn = $('button', 'sz-btn sz-btn-lime', 'Nächste Karte');
+    actions.append(nextHintBtn, revealBtn, nextCardBtn);
+
+    wrap.append(cardBox, ansEl, actions);
+    body.append(wrap);
+
+    const render = (revealed = false) => {
+      const c = CARDS[idx % CARDS.length];
+      cardBox.innerHTML = `<ul style="text-align:left;margin:0;padding-left:20px;line-height:1.7">${c.hints.slice(0, hintCount).map((h) => `<li>${h}</li>`).join('')}</ul>`;
+      ansEl.textContent = revealed ? `Gesucht: ${c.answer}` : '???';
+      status.textContent = `Punkte: ${score} · Hinweise sichtbar: ${hintCount}/${c.hints.length}`;
+    };
+
+    nextHintBtn.onclick = () => {
+      const c = CARDS[idx % CARDS.length];
+      if (hintCount < c.hints.length) hintCount++;
+      render(false);
+    };
+
+    revealBtn.onclick = () => {
+      if (ansEl.textContent === '???') score++;
+      render(true);
+    };
+
+    nextCardBtn.onclick = () => {
+      idx++;
+      hintCount = 1;
+      render(false);
+    };
+
+    render(false);
+  }
+});
+
+// ==========================================
+// 9. BALL RUN
+// ==========================================
+registerGame({
+  id: 'ball-run',
+  title: 'Ball run',
+  icon: '🏀',
+  cat: 'Action',
+  desc: 'Halte den Ball auf der Strecke und weiche roten Blöcken aus.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 400, H = 480;
+    const cv = $('canvas', 'sz-arc-cv');
     cv.width = W; cv.height = H;
     body.append(cv);
     const ctx = cv.getContext('2d');
 
-    let paddleX = W / 2 - 48;
-    const paddleW = 96, paddleH = 12, paddleY = H - 28;
-    let ball = { x: W / 2, y: paddleY - 12, vx: 3.1, vy: -3.4, r: 7 };
-    let score = 0, lives = 3, over = false, keys = {};
-    const cols = 8, rows = 4, bw = 54, bh = 18, gap = 6;
-    const offsetX = (W - (cols * (bw + gap) - gap)) / 2;
-    const palette = ['#ef4444', '#f59e0b', '#22c55e', '#38bdf8'];
+    const trackW = 190;
+    let ballX = W / 2, score = 0, over = false, blocks = [], tick = 0;
 
-    let bricks = [];
-    const buildBricks = () => {
-      bricks = [];
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          bricks.push({
-            x: offsetX + c * (bw + gap),
-            y: 36 + r * (bh + gap),
-            w: bw, h: bh,
-            alive: true,
-            color: palette[r % palette.length]
-          });
-        }
-      }
+    const reset = () => {
+      ballX = W / 2; score = 0; over = false; blocks = []; tick = 0;
+      status.textContent = 'Punkte: 0 · Auf der Bahn bleiben';
     };
 
-    const resetBall = () => {
-      ball = { x: paddleX + paddleW / 2, y: paddleY - 12, vx: (R(2) ? 1 : -1) * 3.1, vy: -3.4, r: 7 };
-    };
-
-    const movePaddleToClientX = (clientX) => {
+    const setX = (clientX) => {
       const rect = cv.getBoundingClientRect();
-      const rel = ((clientX - rect.left) / rect.width) * W;
-      paddleX = Math.max(0, Math.min(W - paddleW, rel - paddleW / 2));
+      ballX = Math.max(20, Math.min(W - 20, ((clientX - rect.left) / rect.width) * W));
     };
 
-    cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); movePaddleToClientX(e.clientX); };
-    cv.onpointermove = (e) => { if (e.buttons || e.pointerType === 'touch') movePaddleToClientX(e.clientX); };
-
-    setKey((e) => {
-      if (['ArrowLeft', 'ArrowRight', 'a', 'd'].includes(e.key)) {
-        e.preventDefault();
-        keys[e.key] = e.type === 'keydown';
-      }
+    cv.onpointerdown = (e) => {
+      if (over) { reset(); return; }
+      cv.setPointerCapture(e.pointerId);
+      setX(e.clientX);
+    };
+    cv.onpointermove = (e) => { if (!over && (e.buttons || e.pointerType === 'touch')) setX(e.clientX); };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', ' '], (e, firstPress) => {
+      if (over && e.key === ' ' && firstPress) reset();
     });
-    window.addEventListener('keyup', (e) => { keys[e.key] = false; });
-
-    const updStatus = () => {
-      status.textContent = over
-        ? `${lives > 0 ? '🏆 Alle Steine zerlegt!' : '💥 Spiel vorbei'} · Punkte: ${score}`
-        : `Punkte: ${score} · Leben: ${'❤️'.repeat(Math.max(0, lives))}`;
-    };
 
     const loop = () => {
       if (!over) {
-        if (keys.ArrowLeft || keys.a) paddleX = Math.max(0, paddleX - 6);
-        if (keys.ArrowRight || keys.d) paddleX = Math.min(W - paddleW, paddleX + 6);
-
-        ball.x += ball.vx;
-        ball.y += ball.vy;
-
-        if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = Math.abs(ball.vx); }
-        if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx); }
-        if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = Math.abs(ball.vy); }
-
-        if (
-          ball.vy > 0 &&
-          ball.y + ball.r >= paddleY &&
-          ball.y - ball.r <= paddleY + paddleH &&
-          ball.x >= paddleX - ball.r &&
-          ball.x <= paddleX + paddleW + ball.r
-        ) {
-          const hitNorm = ((ball.x - (paddleX + paddleW / 2)) / (paddleW / 2));
-          ball.vx = hitNorm * 4.2;
-          ball.vy = -Math.abs(ball.vy);
+        if (keys.ArrowLeft || keys.a) ballX -= 5;
+        if (keys.ArrowRight || keys.d) ballX += 5;
+        tick++;
+        if (tick % 50 === 1) {
+          const leftEdge = (W - trackW) / 2;
+          blocks.push({ x: leftEdge + R(trackW - 44), y: -20, w: 44, h: 18, vy: 3.1 });
         }
 
-        bricks.forEach((b) => {
-          if (!b.alive) return;
-          if (
-            ball.x + ball.r > b.x && ball.x - ball.r < b.x + b.w &&
-            ball.y + ball.r > b.y && ball.y - ball.r < b.y + b.h
-          ) {
-            b.alive = false;
-            ball.vy = -ball.vy;
-            score += 10;
-            updStatus();
-          }
-        });
-
-        if (bricks.every((b) => !b.alive)) {
+        const leftEdge = (W - trackW) / 2;
+        const rightEdge = leftEdge + trackW;
+        if (ballX - 11 < leftEdge || ballX + 11 > rightEdge) {
           over = true;
-          updStatus();
-        } else if (ball.y - ball.r > H) {
-          lives--;
-          if (lives <= 0) {
-            over = true;
-            updStatus();
-          } else {
-            resetBall();
-            updStatus();
+          status.textContent = `💥 Von der Bahn gerollt! Punkte: ${score} · Tippen für Neustart`;
+        }
+
+        const by = H - 75, br = 11;
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b = blocks[i];
+          b.y += b.vy;
+          if (b.y > by + br && !b.passed) {
+            b.passed = true;
+            score++;
+            status.textContent = `Punkte: ${score}`;
           }
+          const nx = Math.max(b.x, Math.min(ballX, b.x + b.w));
+          const ny = Math.max(b.y, Math.min(by, b.y + b.h));
+          if (Math.hypot(ballX - nx, by - ny) < br) {
+            over = true;
+            status.textContent = `💥 Block getroffen! Punkte: ${score} · Tippen für Neustart`;
+          }
+          if (b.y > H + 30) blocks.splice(i, 1);
         }
       }
 
-      ctx.fillStyle = '#0b1120';
+      ctx.fillStyle = '#0c0918';
       ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#241c42';
+      ctx.fillRect((W - trackW) / 2, 0, trackW, H);
 
-      bricks.forEach((b) => {
-        if (!b.alive) return;
-        ctx.fillStyle = b.color;
-        ctx.beginPath();
-        ctx.roundRect(b.x, b.y, b.w, b.h, 5);
-        ctx.fill();
+      blocks.forEach((b) => {
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 5); ctx.fill();
       });
 
-      ctx.fillStyle = '#f8fafc';
-      ctx.beginPath();
-      ctx.roundRect(paddleX, paddleY, paddleW, paddleH, 6);
-      ctx.fill();
-
-      ctx.fillStyle = '#38bdf8';
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillStyle = '#f97316';
+      ctx.beginPath(); ctx.arc(ballX, H - 75, 11, 0, Math.PI * 2); ctx.fill();
 
       trackRaf(requestAnimationFrame(loop));
     };
 
-    buildBricks();
-    updStatus();
+    reset();
     trackRaf(requestAnimationFrame(loop));
   }
 });
 
+// ==========================================
+// 10. TOWER WAR
+// ==========================================
 registerGame({
-  id: 'sudoku',
-  title: 'Sudoku',
-  icon: '🔢',
-  cat: 'Puzzle',
-  desc: 'Fülle jede Zeile, jede Spalte und jeden 3×3-Block mit den Zahlen 1 bis 9.',
+  id: 'tower-war',
+  title: 'Tower war',
+  icon: '🏰',
+  cat: 'Strategie',
+  desc: 'Wähle einen eigenen blauen Turm und klicke auf einen Zielturm, um die Hälfte deiner Einheiten zu schicken.',
   run({ body, status }) {
-    const baseSol = [
-      [5,3,4,6,7,8,9,1,2],
-      [6,7,2,1,9,5,3,4,8],
-      [1,9,8,3,4,2,5,6,7],
-      [8,5,9,7,6,1,4,2,3],
-      [4,2,6,8,5,3,7,9,1],
-      [7,1,3,9,2,4,8,5,6],
-      [9,6,1,5,3,7,2,8,4],
-      [2,8,7,4,1,9,6,3,5],
-      [3,4,5,2,8,6,1,7,9]
+    const { later } = makeRuntime();
+    let towers = [
+      { id: 0, name: 'West-Turm', owner: 'player', units: 16 },
+      { id: 1, name: 'Mittel-Turm', owner: 'neutral', units: 8 },
+      { id: 2, name: 'Ost-Turm', owner: 'enemy', units: 14 }
     ];
-    const perm = [1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
-    const sol = baseSol.map((row) => row.map((v) => perm[v - 1]));
+    let selected = null;
+    let over = false;
 
-    const given = sol.map((row, r) => row.map((v, c) => (((r * 3 + c) % 4 === 0) ? v : 0)));
-    let board = given.map((row) => [...row]);
-    let selected = [0, 0];
-
-    const wrap = $('div', 'sz-sd-wrap');
-    const gridEl = $('div', 'sz-sd-grid');
-    const padEl = $('div', 'sz-sd-numpad');
-    wrap.append(gridEl, padEl);
+    const wrap = $('div', 'sz-tw-wrap');
     body.append(wrap);
 
-    const isConflict = (r, c, val) => {
-      if (!val) return false;
-      for (let i = 0; i < 9; i++) {
-        if (i !== c && board[r][i] === val) return true;
-        if (i !== r && board[i][c] === val) return true;
+    const checkWin = () => {
+      const allPlayer = towers.every((t) => t.owner === 'player');
+      const noPlayer = towers.every((t) => t.owner !== 'player');
+      if (allPlayer) {
+        over = true;
+        status.textContent = '🏆 Alle Türme erobert!';
+      } else if (noPlayer) {
+        over = true;
+        status.textContent = '💥 Alle eigenen Türme verloren!';
       }
-      const br = Math.floor(r / 3) * 3, bc = Math.floor(c / 3) * 3;
-      for (let y = br; y < br + 3; y++) for (let x = bc; x < bc + 3; x++) {
-        if ((y !== r || x !== c) && board[y][x] === val) return true;
-      }
-      return false;
     };
 
-    const setDigit = (num) => {
-      const [r, c] = selected;
-      if (given[r][c] !== 0) return;
-      board[r][c] = num;
+    const tickProd = () => {
+      if (over) return;
+      towers.forEach((t) => {
+        if (t.owner !== 'neutral' && t.units < 30) t.units += 1;
+      });
       render();
-      if (board.every((row, y) => row.every((v, x) => v === sol[y][x]))) {
-        status.textContent = '🎉 Sudoku fehlerfrei gelöst!';
-      } else {
-        const left = board.flat().filter((v) => v === 0).length;
-        status.textContent = `Noch ${left} Felder frei`;
-      }
+      later(tickProd, 1200);
     };
 
     const render = () => {
-      gridEl.innerHTML = '';
-      for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
-        const fixed = given[r][c] !== 0;
-        const val = board[r][c];
-        const bad = !fixed && isConflict(r, c, val);
-        const sel = selected[0] === r && selected[1] === c;
-        const cls = 'sz-sd-cell' + (fixed ? ' fixed' : '') + (sel ? ' sel' : '') + (bad ? ' bad' : '');
-        const btn = $('button', cls, val ? String(val) : '');
-        if (c === 2 || c === 5) btn.style.marginRight = '4px';
-        if (r === 2 || r === 5) btn.style.marginBottom = '4px';
-        btn.onclick = () => { selected = [r, c]; render(); };
-        gridEl.append(btn);
-      }
-
-      padEl.innerHTML = '';
-      for (let n = 1; n <= 9; n++) {
-        const b = $('button', 'sz-btn sz-btn-ghost', String(n));
-        b.onclick = () => setDigit(n);
-        padEl.append(b);
-      }
-      const clr = $('button', 'sz-btn sz-btn-ghost', 'Löschen');
-      clr.onclick = () => setDigit(0);
-      padEl.append(clr);
+      wrap.innerHTML = '';
+      towers.forEach((t) => {
+        const bg = t.owner === 'player' ? '#2563eb' : t.owner === 'enemy' ? '#dc2626' : '#475569';
+        const btn = $('button', 'sz-tw-tower' + (selected === t.id ? ' sel' : ''),
+          `<span>🏰</span><span>${t.name}</span><span style="font-size:20px">${t.units}</span>`
+        );
+        btn.style.background = bg;
+        btn.onclick = () => {
+          if (over) return;
+          if (selected === null) {
+            if (t.owner === 'player' && t.units > 1) {
+              selected = t.id;
+              status.textContent = `${t.name} gewählt – Zielturm antippen`;
+              render();
+            }
+          } else if (selected === t.id) {
+            selected = null;
+            render();
+          } else {
+            const src = towers[selected];
+            const sent = Math.floor(src.units / 2);
+            src.units -= sent;
+            if (t.owner === 'player') {
+              t.units += sent;
+            } else if (sent > t.units) {
+              t.units = sent - t.units;
+              t.owner = 'player';
+            } else {
+              t.units -= sent;
+            }
+            selected = null;
+            render();
+            checkWin();
+          }
+        };
+        wrap.append(btn);
+      });
     };
 
-    status.textContent = `Noch ${board.flat().filter((v) => v === 0).length} Felder frei`;
+    status.textContent = 'Blauen Turm wählen und Ziel angreifen';
+    render();
+    later(tickProd, 1200);
+  }
+});
+
+// ==========================================
+// 11. SOLITAIRE
+// ==========================================
+registerGame({
+  id: 'solitaire',
+  title: 'Solitaire',
+  icon: '♠️',
+  cat: 'Karten & Strategie',
+  desc: 'Lege Karten absteigend mit wechselnder Farbe auf die 4 Spalten oder sortiere sie aufwärts auf den Ablagestapel.',
+  run({ body, status }) {
+    const SUITS = ['♠', '♥', '♦', '♣'];
+    const isRed = (s) => s === '♥' || s === '♦';
+    const deck = [];
+    for (const s of SUITS) for (let v = 1; v <= 6; v++) deck.push({ s, v });
+    deck.sort(() => Math.random() - 0.5);
+
+    let cols = Array.from({ length: 4 }, (_, i) => [deck[i]]);
+    let waste = deck.slice(4, 12);
+    let foundation = [];
+    let selected = null;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:640px';
+    const topRow = $('div', null, '');
+    topRow.style.cssText = 'display:flex;gap:16px;align-items:center;flex-wrap:wrap;justify-content:center';
+    const colsRow = $('div', null, '');
+    colsRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,minmax(95px,1fr));gap:10px;width:100%';
+    wrap.append(topRow, colsRow);
+    body.append(wrap);
+
+    const getPicked = () => {
+      if (!selected) return null;
+      if (selected.type === 'waste') return waste[waste.length - 1] || null;
+      return cols[selected.col]?.[selected.idx] || null;
+    };
+
+    const removePicked = () => {
+      if (!selected) return;
+      if (selected.type === 'waste') waste.pop();
+      else cols[selected.col].splice(selected.idx);
+      selected = null;
+    };
+
+    const render = () => {
+      topRow.innerHTML = '';
+      const drawBtn = $('button', 'sz-btn sz-btn-ghost', `🃏 Nachziehen (${waste.length})`);
+      drawBtn.onclick = () => {
+        if (!waste.length) return;
+        waste.push(waste.shift());
+        selected = null;
+        render();
+      };
+
+      const topW = waste[waste.length - 1];
+      const wCard = $('button', 'sz-pk-card' + (topW && isRed(topW.s) ? ' red' : '') + (selected?.type === 'waste' ? ' hold' : ''),
+        topW ? `<span>${topW.v}</span><span style="font-size:22px">${topW.s}</span>` : '<small>Leer</small>'
+      );
+      wCard.onclick = () => {
+        if (!topW) return;
+        selected = selected?.type === 'waste' ? null : { type: 'waste' };
+        render();
+      };
+
+      const fTop = foundation[foundation.length - 1];
+      const fBtn = $('button', 'sz-pk-card' + (fTop && isRed(fTop.s) ? ' red' : ''),
+        fTop ? `<span>${fTop.v}</span><span style="font-size:22px">${fTop.s}</span><small>Ablage</small>` : '<small>Ablage<br>Start: 1</small>'
+      );
+      fBtn.onclick = () => {
+        const card = getPicked();
+        if (!card) return;
+        if (card.v === foundation.length + 1) {
+          foundation.push(card);
+          removePicked();
+          status.textContent = foundation.length === 24 ? '🏆 Solitaire geschafft!' : `Ablage: ${foundation.length}/24 Karten`;
+          render();
+        }
+      };
+
+      topRow.append(drawBtn, wCard, fBtn);
+
+      colsRow.innerHTML = '';
+      cols.forEach((col, cIdx) => {
+        const box = $('div', null, '');
+        box.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:center;min-height:130px;padding:8px;border-radius:12px;background:var(--sz-surface-2)';
+        col.forEach((card, kIdx) => {
+          const isSel = selected?.type === 'col' && selected.col === cIdx && selected.idx === kIdx;
+          const btn = $('button', 'sz-pk-card' + (isRed(card.s) ? ' red' : '') + (isSel ? ' hold' : ''),
+            `<span>${card.v}</span><span style="font-size:22px">${card.s}</span>`
+          );
+          btn.onclick = (ev) => {
+            ev.stopPropagation();
+            if (isSel) { selected = null; render(); return; }
+            const picked = getPicked();
+            if (picked && kIdx === col.length - 1 && isRed(picked.s) !== isRed(card.s) && picked.v === card.v - 1) {
+              const moving = selected.type === 'waste' ? [waste.pop()] : cols[selected.col].splice(selected.idx);
+              cols[cIdx].push(...moving);
+              selected = null;
+              render();
+              return;
+            }
+            selected = { type: 'col', col: cIdx, idx: kIdx };
+            render();
+          };
+          box.append(btn);
+        });
+        box.onclick = () => {
+          const picked = getPicked();
+          if (picked && col.length === 0) {
+            const moving = selected.type === 'waste' ? [waste.pop()] : cols[selected.col].splice(selected.idx);
+            cols[cIdx].push(...moving);
+            selected = null;
+            render();
+          }
+        };
+        colsRow.append(box);
+      });
+    };
+
+    status.textContent = `Ablage: 0/24 Karten · Karten anlegen oder auf Ablage sortieren`;
     render();
   }
 });
 
+// ==========================================
+// 12. DAME
+// ==========================================
 registerGame({
-  id: 'uno',
-  title: 'Uno',
-  icon: '🌈',
-  cat: 'Karten & Strategie',
-  desc: 'Lege eine Karte mit gleicher Farbe oder Zahl bzw. Aktion ab oder ziehe vom Stapel.',
+  id: 'dame',
+  title: 'Dame',
+  icon: '⚫',
+  cat: 'Brettspiele',
+  desc: 'Ziehe deine Steine (⚪) diagonal vorwärts und schlage gegnerische Steine (⚫) durch Überspringen.',
   run({ body, status }) {
-    const COLORS = ['rot', 'blau', 'grün', 'gelb'];
-    const HEX = { rot: '#dc2626', blau: '#2563eb', grün: '#16a34a', gelb: '#d97706' };
-    const VALUES = ['0', '1', '2', '3', '4', '5', '6', '7', '+2', 'Aussetzen'];
+    const { later } = makeRuntime();
+    const N = 8;
+    let board = Array.from({ length: N }, (_, r) =>
+      Array.from({ length: N }, (_, c) => {
+        if ((r + c) % 2 === 1) {
+          if (r < 3) return 2;
+          if (r > 4) return 1;
+        }
+        return 0;
+      })
+    );
+    let sel = null;
+    let turn = 1;
 
-    const makeCard = () => ({ color: COLORS[R(COLORS.length)], val: VALUES[R(VALUES.length)] });
-    let myHand = Array.from({ length: 7 }, makeCard);
-    let aiHand = Array.from({ length: 7 }, makeCard);
-    let topCard = makeCard();
-    let turn = 0;
-    let over = false;
-
-    const wrap = $('div', 'sz-uno');
-    const infoEl = $('div', null, '');
-    infoEl.style.fontWeight = '700';
-    const tableEl = $('div', 'sz-uno-table');
-    const handEl = $('div', 'sz-uno-hand');
-    wrap.append(infoEl, tableEl, handEl);
+    const wrap = $('div', 'sz-ck-grid');
     body.append(wrap);
 
-    const canPlay = (card) => card.color === topCard.color || card.val === topCard.val;
-
-    const endCheck = () => {
-      if (!myHand.length) {
-        over = true;
-        status.textContent = '🏆 Du hast gewonnen!';
-        render();
+    const tryMove = (tr, tc) => {
+      if (!sel || board[tr][tc] !== 0 || (tr + tc) % 2 === 0) return false;
+      const [sr, sc] = sel;
+      const dr = tr - sr, dc = tc - sc;
+      if (Math.abs(dc) === 1 && dr === -1) {
+        board[tr][tc] = 1;
+        board[sr][sc] = 0;
+        sel = null;
         return true;
       }
-      if (!aiHand.length) {
-        over = true;
-        status.textContent = '🤖 Computer hat gewonnen!';
-        render();
-        return true;
+      if (Math.abs(dc) === 2 && dr === -2) {
+        const mr = (sr + tr) / 2, mc = (sc + tc) / 2;
+        if (board[mr][mc] === 2) {
+          board[tr][tc] = 1;
+          board[sr][sc] = 0;
+          board[mr][mc] = 0;
+          sel = null;
+          return true;
+        }
       }
       return false;
     };
 
-    const applyCard = (card, fromPlayer) => {
-      topCard = card;
-      let nextTurn = 1 - fromPlayer;
-      if (card.val === '+2') {
-        if (fromPlayer === 0) { aiHand.push(makeCard(), makeCard()); nextTurn = 0; }
-        else { myHand.push(makeCard(), makeCard()); nextTurn = 1; }
-      } else if (card.val === 'Aussetzen') {
-        nextTurn = fromPlayer;
+    const aiTurn = () => {
+      const moves = [];
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+        if (board[r][c] !== 2) continue;
+        for (const dc of [-1, 1]) {
+          const nr = r + 1, nc = c + dc;
+          if (nr < N && nc >= 0 && nc < N && board[nr][nc] === 0) {
+            moves.push({ sr: r, sc: c, tr: nr, tc: nc, cap: null });
+          }
+          const jr = r + 2, jc = c + dc * 2;
+          if (jr < N && jc >= 0 && jc < N && board[r + 1][c + dc] === 1 && board[jr][jc] === 0) {
+            moves.unshift({ sr: r, sc: c, tr: jr, tc: jc, cap: [r + 1, c + dc] });
+          }
+        }
       }
-      turn = nextTurn;
-      if (!endCheck()) {
-        render();
-        if (turn === 1) setTimeout(aiStep, 650);
+      if (moves.length) {
+        const m = moves[0];
+        board[m.tr][m.tc] = 2;
+        board[m.sr][m.sc] = 0;
+        if (m.cap) board[m.cap[0]][m.cap[1]] = 0;
       }
-    };
-
-    const aiStep = () => {
-      if (over || turn !== 1) return;
-      const idx = aiHand.findIndex(canPlay);
-      if (idx >= 0) {
-        const [card] = aiHand.splice(idx, 1);
-        applyCard(card, 1);
-      } else {
-        aiHand.push(makeCard());
-        turn = 0;
-        render();
-      }
-    };
-
-    const drawFromDeck = () => {
-      if (over || turn !== 0) return;
-      const card = makeCard();
-      myHand.push(card);
-      if (canPlay(card)) {
-        const idx = myHand.length - 1;
-        myHand.splice(idx, 1);
-        applyCard(card, 0);
-      } else {
-        turn = 1;
-        render();
-        setTimeout(aiStep, 650);
-      }
+      turn = 1;
+      render();
+      const pCount = board.flat().filter((v) => v === 1).length;
+      const aCount = board.flat().filter((v) => v === 2).length;
+      if (!aCount) status.textContent = '🏆 Alle Gegnersteine geschlagen!';
+      else if (!pCount) status.textContent = '💥 Alle eigenen Steine verloren!';
+      else status.textContent = `Du (⚪): ${pCount} · Gegner (⚫): ${aCount} · Du bist dran`;
     };
 
     const render = () => {
-      infoEl.textContent = `Computer-Karten: ${aiHand.length} · ${over ? 'Runde beendet' : turn === 0 ? 'Du bist dran' : 'Computer ist dran…'}`;
-      status.textContent = over ? infoEl.textContent : `Aktive Karte: ${topCard.color.toUpperCase()} ${topCard.val}`;
+      wrap.innerHTML = '';
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+        const isDark = (r + c) % 2 === 1;
+        const v = board[r][c];
+        const isSel = sel && sel[0] === r && sel[1] === c;
+        const sym = v === 1 ? '⚪' : v === 2 ? '⚫' : '';
+        const cell = $('button', 'sz-ck-cell ' + (isDark ? 'dark' : 'light') + (isSel ? ' sel' : ''), sym);
+        cell.onclick = () => {
+          if (turn !== 1) return;
+          if (v === 1) {
+            sel = [r, c];
+            render();
+          } else if (sel && tryMove(r, c)) {
+            turn = 2;
+            render();
+            status.textContent = 'Gegner zieht…';
+            later(aiTurn, 350);
+          }
+        };
+        wrap.append(cell);
+      }
+    };
 
-      tableEl.innerHTML = '';
-      const deckBtn = $('button', 'sz-uno-card', '<span>🃏</span><small>Ziehen</small>');
-      deckBtn.style.background = '#334155';
-      deckBtn.onclick = drawFromDeck;
+    status.textContent = 'Wähle einen weißen Stein (⚪) und ziehe diagonal';
+    render();
+  }
+});
 
-      const pileEl = $('div', 'sz-uno-card', `<span style="text-transform:uppercase;font-size:12px">${topCard.color}</span><span style="font-size:24px">${topCard.val}</span>`);
-      pileEl.style.background = HEX[topCard.color];
-      pileEl.style.cursor = 'default';
-      tableEl.append(deckBtn, pileEl);
+// ==========================================
+// 13. MIAUDOKU
+// ==========================================
+registerGame({
+  id: 'miaudoku',
+  title: 'Miaudoku (Kakuro/Sudoku-Stil)',
+  icon: '🐱',
+  cat: 'Puzzle',
+  desc: 'Platziere jedes der 4 Katzensymbole (🐱 😸 🐾 🧶) genau einmal pro Zeile und Spalte.',
+  run({ body, status }) {
+    const N = 4;
+    const SYMS = ['🐱', '😸', '🐾', '🧶'];
+    const sol = [
+      [0, 1, 2, 3],
+      [2, 3, 0, 1],
+      [1, 0, 3, 2],
+      [3, 2, 1, 0]
+    ];
+    const fixed = [
+      [0, -1, -1, 3],
+      [-1, 3, -1, -1],
+      [-1, -1, 3, -1],
+      [3, -1, -1, 0]
+    ];
+    let grid = fixed.map((r) => [...r]);
 
+    const wrap = $('div', 'sz-md-grid');
+    body.append(wrap);
+
+    const check = () => {
+      if (grid.every((r, y) => r.every((v, x) => v === sol[y][x]))) {
+        status.textContent = '🐱🎉 Miaudoku perfekt gelöst!';
+        return;
+      }
+      const open = grid.flat().filter((v) => v === -1).length;
+      status.textContent = open ? `Noch ${open} Felder offen` : 'Prüfe Zeilen & Spalten auf Doppelte';
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+        const isFixed = fixed[r][c] !== -1;
+        const val = grid[r][c];
+        const cell = $('button', 'sz-md-cell' + (isFixed ? ' fixed' : ''), val >= 0 ? SYMS[val] : '');
+        if (!isFixed) {
+          cell.onclick = () => {
+            grid[r][c] = (grid[r][c] + 1) % SYMS.length;
+            render();
+            check();
+          };
+        }
+        wrap.append(cell);
+      }
+    };
+
+    render();
+    check();
+  }
+});
+
+// ==========================================
+// 14. HERZEN
+// ==========================================
+registerGame({
+  id: 'herzen',
+  title: 'Herzen',
+  icon: '♥️',
+  cat: 'Karten & Strategie',
+  desc: 'Spiele eine Karte aus deiner Hand – Herz-Karten (♥️) geben Minuspunkte, andere Karten bringen Punkte.',
+  run({ body, status }) {
+    const SUITS = ['♣', '♦', '♠', '♥'];
+    const makeHand = () => Array.from({ length: 5 }, () => ({
+      s: SUITS[R(SUITS.length)],
+      v: 2 + R(12)
+    }));
+
+    let hand = makeHand();
+    let score = 0, round = 1;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:640px';
+    const handEl = $('div', 'sz-pk-hand');
+    wrap.append(handEl);
+    body.append(wrap);
+
+    const render = () => {
       handEl.innerHTML = '';
-      myHand.forEach((card, idx) => {
-        const playable = !over && turn === 0 && canPlay(card);
-        const btn = $('button', 'sz-uno-card', `<span style="text-transform:uppercase;font-size:11px">${card.color}</span><span style="font-size:22px">${card.val}</span>`);
-        btn.style.background = HEX[card.color];
-        btn.style.opacity = playable ? '1' : '0.55';
+      hand.forEach((c, idx) => {
+        const red = c.s === '♥' || c.s === '♦';
+        const btn = $('button', 'sz-pk-card' + (red ? ' red' : ''),
+          `<span>${c.v}</span><span style="font-size:22px">${c.s}</span>`
+        );
         btn.onclick = () => {
-          if (!playable) return;
-          myHand.splice(idx, 1);
-          applyCard(card, 0);
+          hand.splice(idx, 1);
+          if (c.s === '♥') {
+            score -= c.v;
+            status.textContent = `💔 Herz ${c.v} gezogen (-${c.v}) · Konto: ${score}`;
+          } else {
+            score += 5;
+            status.textContent = `✔ Sicher abgelegt (+5) · Konto: ${score}`;
+          }
+          if (!hand.length) {
+            round++;
+            hand = makeHand();
+          }
+          render();
         };
         handEl.append(btn);
       });
     };
 
+    status.textContent = `Runde ${round} · Konto: ${score} · Möglichst wenig Herzen spielen`;
+    render();
+  }
+});
+
+// ==========================================
+// 15. MINI METRO
+// ==========================================
+registerGame({
+  id: 'mini-metro',
+  title: 'Mini Metro',
+  icon: '🚇',
+  cat: 'Strategie',
+  desc: 'Klicke zwei Stationen nacheinander an, um eine U-Bahn-Linie zu ziehen und Fahrgäste abzuholen.',
+  run({ body, status }) {
+    const { trackRaf } = makeArcadeCanvasRuntime();
+    const W = 520, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    const stations = [
+      { id: 0, x: 90, y: 110, waiting: 2 },
+      { id: 1, x: 210, y: 80, waiting: 1 },
+      { id: 2, x: 340, y: 130, waiting: 2 },
+      { id: 3, x: 430, y: 220, waiting: 1 },
+      { id: 4, x: 150, y: 230, waiting: 2 }
+    ];
+    let lines = [[0, 1], [1, 2]];
+    let selStation = null;
+    let delivered = 0;
+    let tStep = 0;
+
+    cv.onpointerdown = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * W;
+      const y = ((e.clientY - rect.top) / rect.height) * H;
+      const hit = stations.find((s) => Math.hypot(s.x - x, s.y - y) < 22);
+      if (!hit) { selStation = null; return; }
+      if (selStation === null) {
+        selStation = hit.id;
+        status.textContent = `Station ${hit.id + 1} gewählt – zweite Station antippen`;
+      } else if (selStation !== hit.id) {
+        lines.push([selStation, hit.id]);
+        selStation = null;
+        status.textContent = `Linie gebaut! Befördert: ${delivered}`;
+      }
+    };
+
+    const loop = () => {
+      tStep++;
+      if (tStep % 95 === 0) stations[R(stations.length)].waiting++;
+      if (tStep % 55 === 0 && lines.length) {
+        const ln = lines[R(lines.length)];
+        const a = stations[ln[0]], b = stations[ln[1]];
+        if (a.waiting > 0) { a.waiting--; delivered++; }
+        if (b.waiting > 0) { b.waiting--; delivered++; }
+        status.textContent = `Befördert: ${delivered} · Linien: ${lines.length}`;
+      }
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 5;
+      lines.forEach(([i, j]) => {
+        ctx.beginPath();
+        ctx.moveTo(stations[i].x, stations[i].y);
+        ctx.lineTo(stations[j].x, stations[j].y);
+        ctx.stroke();
+      });
+
+      stations.forEach((s) => {
+        ctx.fillStyle = selStation === s.id ? '#a3e635' : '#f8fafc';
+        ctx.beginPath(); ctx.arc(s.x, s.y, 14, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#0f172a';
+        ctx.font = '800 12px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(s.waiting), s.x, s.y + 4);
+      });
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `Befördert: 0 · Zwei Stationen antippen, um Linien zu ziehen`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 16. BALATRO
+// ==========================================
+registerGame({
+  id: 'balatro',
+  title: 'Balatro',
+  icon: '🃏',
+  cat: 'Karten & Strategie',
+  desc: 'Wähle bis zu 5 Karten und spiele deine Hand, um das Punktesoll der Runde zu erreichen.',
+  run({ body, status }) {
+    const SUITS = ['♠', '♥', '♦', '♣'];
+    const dealHand = () => Array.from({ length: 7 }, () => ({
+      s: SUITS[R(SUITS.length)],
+      v: 2 + R(12),
+      sel: false
+    }));
+
+    let hand = dealHand();
+    let score = 0, target = 120, handsLeft = 3;
+
+    const wrap = $('div', 'sz-pk-wrap');
+    const handEl = $('div', 'sz-pk-hand');
+    const playBtn = $('button', 'sz-btn sz-btn-primary', 'Hand spielen');
+    wrap.append(handEl, playBtn);
+    body.append(wrap);
+
+    const calcPlay = (picked) => {
+      if (!picked.length) return 0;
+      const chips = picked.reduce((sum, c) => sum + c.v, 0) + 15;
+      const mult = picked.length >= 3 ? 3 : picked.length === 2 ? 2 : 1;
+      return chips * mult;
+    };
+
+    const render = () => {
+      handEl.innerHTML = '';
+      hand.forEach((c) => {
+        const red = c.s === '♥' || c.s === '♦';
+        const btn = $('button', 'sz-pk-card' + (red ? ' red' : '') + (c.sel ? ' hold' : ''),
+          `<span>${c.v}</span><span style="font-size:22px">${c.s}</span>`
+        );
+        btn.onclick = () => {
+          const curSelCount = hand.filter((x) => x.sel).length;
+          if (!c.sel && curSelCount >= 5) return;
+          c.sel = !c.sel;
+          render();
+        };
+        handEl.append(btn);
+      });
+      status.textContent = `Punkte: ${score}/${target} · Hände übrig: ${handsLeft}`;
+    };
+
+    playBtn.onclick = () => {
+      if (handsLeft <= 0 || score >= target) return;
+      const picked = hand.filter((c) => c.sel);
+      if (!picked.length) return;
+      const pts = calcPlay(picked);
+      score += pts;
+      handsLeft--;
+      hand = hand.filter((c) => !c.sel);
+      while (hand.length < 7) hand.push({ s: SUITS[R(SUITS.length)], v: 2 + R(12), sel: false });
+      render();
+      if (score >= target) {
+        status.textContent = `🏆 Ziel geknackt! (${score}/${target} Punkte)`;
+      } else if (handsLeft === 0) {
+        status.textContent = `💥 Hände aufgebraucht (${score}/${target} Punkte)`;
+      } else {
+        status.textContent = `+${pts} Punkte! · Stand: ${score}/${target} · Hände: ${handsLeft}`;
+      }
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 17. HOTEL MANAGER
+// ==========================================
+registerGame({
+  id: 'hotel-manager',
+  title: 'Hotel manager',
+  icon: '🏨',
+  cat: 'Strategie',
+  desc: 'Tippe auf freie Zimmer, um Gäste einzuchecken, und kassiere Einnahmen von belegten Zimmern.',
+  run({ body, status }) {
+    const { later } = makeRuntime();
+    let cash = 100;
+    let rooms = ['free', 'guest', 'free', 'dirty', 'free', 'guest'];
+
+    const wrap = $('div', 'sz-hm-grid');
+    body.append(wrap);
+
+    const tickGuests = () => {
+      rooms = rooms.map((r) => (r === 'free' && R(100) < 35 ? 'guest' : r));
+      render();
+      later(tickGuests, 2200);
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      rooms.forEach((st, idx) => {
+        const label = st === 'free' ? '🟢 Frei (Einchecken)' : st === 'guest' ? '🛎️ Gast da (+25€)' : '🧹 Aufräumen';
+        const btn = $('button', 'sz-hm-room', `<span style="font-size:18px">Zimmer ${idx + 1}</span><span>${label}</span>`);
+        btn.onclick = () => {
+          if (st === 'free') rooms[idx] = 'guest';
+          else if (st === 'guest') { cash += 25; rooms[idx] = 'dirty'; }
+          else rooms[idx] = 'free';
+          render();
+        };
+        wrap.append(btn);
+      });
+      status.textContent = `Kasse: ${cash} € · Zimmer antippen zum Verwalten`;
+    };
+
+    render();
+    later(tickGuests, 2200);
+  }
+});
+
+// ==========================================
+// 18. RIDER
+// ==========================================
+registerGame({
+  id: 'rider',
+  title: 'Rider',
+  icon: '🏍️',
+  cat: 'Action',
+  desc: 'Halte gedrückt (Maus/Finger/Leertaste), um auf Rampen abzuspringen und sauber zu landen.',
+  run({ body, status }) {
+    const { trackRaf, on, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 480, H = 300;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let bikeY = 190, vy = 0, air = false, holding = false, score = 0, over = false, tick = 0;
+
+    const reset = () => {
+      bikeY = 190; vy = 0; air = false; holding = false; score = 0; over = false; tick = 0;
+      status.textContent = 'Punkte: 0 · Gedrückt halten zum Springen';
+    };
+
+    const pressStart = () => {
+      if (over) { reset(); return; }
+      holding = true;
+      if (!air) { vy = -6.8; air = true; }
+    };
+    const pressEnd = () => { holding = false; };
+
+    cv.onpointerdown = pressStart;
+    on(window, 'pointerup', pressEnd);
+    on(window, 'pointercancel', pressEnd);
+    bindKeys([' ', 'ArrowUp'], (e, firstPress) => {
+      if (e.type === 'keydown' && firstPress) pressStart();
+      if (e.type === 'keyup') pressEnd();
+    });
+
+    const loop = () => {
+      if (!over) {
+        tick++;
+        if (tick % 35 === 0) { score++; status.textContent = `Punkte: ${score}`; }
+        if (air) {
+          vy += holding ? 0.24 : 0.42;
+          bikeY += vy;
+          if (bikeY >= 190) {
+            bikeY = 190;
+            vy = 0;
+            air = false;
+          }
+        }
+      }
+
+      ctx.fillStyle = '#0c0918';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#312e81';
+      ctx.fillRect(0, 206, W, H - 206);
+
+      ctx.fillStyle = '#a3e635';
+      ctx.beginPath(); ctx.arc(110, bikeY, 14, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    reset();
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 19. SRW2
+// ==========================================
+registerGame({
+  id: 'srw2',
+  title: 'SRW2',
+  icon: '🚀',
+  cat: 'Action',
+  desc: 'Wechsle zwischen 3 Spuren (links/rechts oder Pfeiltasten/A/D) und weiche Hindernissen aus.',
+  run({ body, status }) {
+    const { trackRaf, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 380, H = 480;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    const lanes = [95, 190, 285];
+    let lane = 1, score = 0, over = false, obs = [], tick = 0;
+
+    const reset = () => {
+      lane = 1; score = 0; over = false; obs = []; tick = 0;
+      status.textContent = 'Punkte: 0 · Spur wechseln';
+    };
+
+    cv.onpointerdown = (e) => {
+      if (over) { reset(); return; }
+      const rect = cv.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * W;
+      lane = x < W / 2 ? Math.max(0, lane - 1) : Math.min(2, lane + 1);
+    };
+
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', ' '], (e, firstPress) => {
+      if (e.type !== 'keydown' || !firstPress) return;
+      if (over && e.key === ' ') { reset(); return; }
+      if (e.key === 'ArrowLeft' || e.key === 'a') lane = Math.max(0, lane - 1);
+      if (e.key === 'ArrowRight' || e.key === 'd') lane = Math.min(2, lane + 1);
+    });
+
+    const loop = () => {
+      if (!over) {
+        tick++;
+        if (tick % 46 === 1) {
+          obs.push({ ln: R(3), y: -30, vy: 4.2 + Math.min(2.5, score * 0.04) });
+        }
+        const py = H - 70;
+        for (let i = obs.length - 1; i >= 0; i--) {
+          const o = obs[i];
+          o.y += o.vy;
+          if (o.y > py + 24 && !o.passed) {
+            o.passed = true;
+            score++;
+            status.textContent = `Punkte: ${score}`;
+          }
+          if (o.ln === lane && Math.abs(o.y - py) < 24) {
+            over = true;
+            status.textContent = `💥 Kollision! Punkte: ${score} · Tippen für Neustart`;
+          }
+          if (o.y > H + 30) obs.splice(i, 1);
+        }
+      }
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+      [142, 238].forEach((x) => {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      });
+
+      obs.forEach((o) => {
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(lanes[o.ln] - 18, o.y - 18, 36, 36);
+      });
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(lanes[lane] - 18, H - 88, 36, 36);
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    reset();
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 20. TOMB OF THE MASK
+// ==========================================
+registerGame({
+  id: 'tomb-of-the-mask',
+  title: 'Tomb of the Mask',
+  icon: '🎭',
+  cat: 'Action',
+  desc: 'Wische oder nutze Pfeiltasten/WASD – deine Figur rast bis zur nächsten Wand und sammelt Edelsteine.',
+  run({ body, status }) {
+    const { trackRaf, on, bindKeys } = makeArcadeCanvasRuntime();
+    const N = 7, cell = 46;
+    let map = [
+      1, 1, 1, 1, 1, 1, 1,
+      1, 0, 0, 2, 0, 0, 1,
+      1, 0, 1, 1, 0, 1, 1,
+      1, 0, 0, 0, 2, 0, 1,
+      1, 1, 0, 1, 1, 0, 1,
+      1, 2, 0, 0, 0, 3, 1,
+      1, 1, 1, 1, 1, 1, 1
+    ];
+    let px = 1, py = 1, vx = 0, vy = 0, gems = 0, won = false;
+    let sx = 0, sy = 0, swiping = false;
+
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = N * cell; cv.height = N * cell;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    const startDash = (dx, dy) => {
+      if (won || vx !== 0 || vy !== 0) return;
+      vx = dx; vy = dy;
+    };
+
+    cv.onpointerdown = (e) => { sx = e.clientX; sy = e.clientY; swiping = true; };
+    on(window, 'pointerup', (e) => {
+      if (!swiping) return;
+      swiping = false;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (Math.abs(dx) < 16 && Math.abs(dy) < 16) return;
+      if (Math.abs(dx) > Math.abs(dy)) startDash(Math.sign(dx), 0);
+      else startDash(0, Math.sign(dy));
+    });
+
+    bindKeys(['ArrowUp', 'w', 'ArrowDown', 's', 'ArrowLeft', 'a', 'ArrowRight', 'd'], (e, firstPress) => {
+      if (e.type !== 'keydown' || !firstPress) return;
+      const dir = { ArrowUp: [0, -1], w: [0, -1], ArrowDown: [0, 1], s: [0, 1], ArrowLeft: [-1, 0], a: [-1, 0], ArrowRight: [1, 0], d: [1, 0] }[e.key];
+      if (dir) startDash(...dir);
+    });
+
+    let tick = 0;
+    const loop = () => {
+      tick++;
+      if (!won && (vx !== 0 || vy !== 0) && tick % 6 === 0) {
+        const nx = px + vx, ny = py + vy;
+        const tile = map[ny * N + nx];
+        if (tile === 1) {
+          vx = 0; vy = 0;
+        } else {
+          px = nx; py = ny;
+          if (tile === 2) {
+            map[ny * N + nx] = 0;
+            gems++;
+            status.textContent = `💎 Edelsteine: ${gems} · Weiter zum Ausgang`;
+          } else if (tile === 3) {
+            won = true;
+            vx = 0; vy = 0;
+            status.textContent = `🏆 Ausgang erreicht! Edelsteine: ${gems}`;
+          }
+        }
+      }
+
+      ctx.fillStyle = '#120d26';
+      ctx.fillRect(0, 0, cv.width, cv.height);
+
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        const t = map[y * N + x];
+        if (t === 1) {
+          ctx.fillStyle = '#475569';
+          ctx.fillRect(x * cell, y * cell, cell, cell);
+        } else if (t === 2) {
+          ctx.fillStyle = '#38bdf8';
+          ctx.beginPath(); ctx.arc(x * cell + cell / 2, y * cell + cell / 2, 8, 0, Math.PI * 2); ctx.fill();
+        } else if (t === 3) {
+          ctx.fillStyle = '#22c55e';
+          ctx.fillRect(x * cell + 8, y * cell + 8, cell - 16, cell - 16);
+        }
+      }
+
+      ctx.fillStyle = '#facc15';
+      ctx.beginPath();
+      ctx.arc(px * cell + cell / 2, py * cell + cell / 2, 14, 0, Math.PI * 2);
+      ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `💎 Edelsteine: 0 · Wischen oder Pfeiltasten zum Rasen`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 21. COLOR SLIDE
+// ==========================================
+registerGame({
+  id: 'color-slide',
+  title: 'Color Slide',
+  icon: '🎨',
+  cat: 'Puzzle',
+  desc: 'Tippe auf Kacheln neben dem freien Feld, um sie zu verschieben und Farben in Reihen zu ordnen.',
+  run({ body, status }) {
+    const COLS = ['#0f172a', '#ef4444', '#3b82f6', '#22c55e'];
+    const LBL = ['', 'ROT', 'BLAU', 'GRÜN'];
+    let tiles = [1, 2, 3, 1, 2, 3, 1, 2, 0];
+    let moves = 0;
+
+    const wrap = $('div', 'sz-cs-grid');
+    body.append(wrap);
+
+    const checkDone = () => {
+      const rowsOk = [0, 3, 6].every((start) => {
+        const vals = tiles.slice(start, start + 3).filter((v) => v !== 0);
+        return vals.length > 0 && vals.every((v) => v === vals[0]);
+      });
+      status.textContent = rowsOk
+        ? `🎉 Reihen sortiert in ${moves} Zügen!`
+        : `Züge: ${moves} · Gleiche Farben in Reihen bringen`;
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      tiles.forEach((v, idx) => {
+        const btn = $('button', 'sz-cs-tile', LBL[v]);
+        btn.style.background = COLS[v];
+        btn.onclick = () => {
+          const empty = tiles.indexOf(0);
+          const r1 = Math.floor(idx / 3), c1 = idx % 3;
+          const r2 = Math.floor(empty / 3), c2 = empty % 3;
+          if (Math.abs(r1 - r2) + Math.abs(c1 - c2) === 1) {
+            [tiles[idx], tiles[empty]] = [tiles[empty], tiles[idx]];
+            moves++;
+            render();
+            checkDone();
+          }
+        };
+        wrap.append(btn);
+      });
+    };
+
+    render();
+    checkDone();
+  }
+});
+
+// ==========================================
+// 22. NONOGRAM
+// ==========================================
+registerGame({
+  id: 'nonogram',
+  title: 'Nonogram',
+  icon: '⬛',
+  cat: 'Puzzle',
+  desc: 'Nutze die Zahlen links (Blöcke pro Zeile) und fülle die Felder zum Pixelbild aus.',
+  run({ body, status }) {
+    const N = 5;
+    const sol = [
+      0, 1, 0, 1, 0,
+      1, 1, 1, 1, 1,
+      1, 1, 1, 1, 1,
+      0, 1, 1, 1, 0,
+      0, 0, 1, 0, 0
+    ];
+    let grid = Array(N * N).fill(0);
+
+    const rowHint = (r) => {
+      const runs = [];
+      let cur = 0;
+      for (let c = 0; c < N; c++) {
+        if (sol[r * N + c]) cur++;
+        else if (cur) { runs.push(cur); cur = 0; }
+      }
+      if (cur) runs.push(cur);
+      return runs.join(' ');
+    };
+
+    const wrap = $('div', 'sz-ng-wrap');
+    body.append(wrap);
+
+    const checkWin = () => {
+      const ok = grid.every((v, i) => v === sol[i]);
+      status.textContent = ok ? '🎉 Nonogram gelöst!' : 'Felder antippen zum Ausfüllen';
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      for (let r = 0; r < N; r++) {
+        const row = $('div', 'sz-ng-row');
+        row.append($('span', 'sz-ng-hint', rowHint(r)));
+        for (let c = 0; c < N; c++) {
+          const idx = r * N + c;
+          const cell = $('button', 'sz-ng-cell' + (grid[idx] ? ' fill' : ''), grid[idx] ? '■' : '');
+          cell.onclick = () => {
+            grid[idx] = grid[idx] ? 0 : 1;
+            render();
+            checkWin();
+          };
+          row.append(cell);
+        }
+        wrap.append(row);
+      }
+    };
+
+    render();
+    checkWin();
+  }
+});
+
+// ==========================================
+// 23. BALL BLAST
+// ==========================================
+registerGame({
+  id: 'ball-blast',
+  title: 'Ball Blast',
+  icon: '💥',
+  cat: 'Action',
+  desc: 'Lenke die Kanone nach links/rechts und schieße auf herabfallende Zahlenblöcke.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 400, H = 480;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let gunX = W / 2, score = 0, over = false;
+    let bullets = [], blocks = [], tick = 0;
+
+    const reset = () => {
+      gunX = W / 2; score = 0; over = false; bullets = []; blocks = []; tick = 0;
+      status.textContent = 'Punkte: 0 · Blöcke abschießen!';
+    };
+
+    const setX = (clientX) => {
+      const rect = cv.getBoundingClientRect();
+      gunX = Math.max(24, Math.min(W - 24, ((clientX - rect.left) / rect.width) * W));
+    };
+
+    cv.onpointerdown = (e) => {
+      if (over) { reset(); return; }
+      cv.setPointerCapture(e.pointerId);
+      setX(e.clientX);
+    };
+    cv.onpointermove = (e) => { if (!over && (e.buttons || e.pointerType === 'touch')) setX(e.clientX); };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', ' '], (e, firstPress) => {
+      if (over && e.key === ' ' && firstPress) reset();
+    });
+
+    const loop = () => {
+      if (!over) {
+        if (keys.ArrowLeft || keys.a) gunX = Math.max(24, gunX - 5);
+        if (keys.ArrowRight || keys.d) gunX = Math.min(W - 24, gunX + 5);
+
+        tick++;
+        if (tick % 10 === 0) bullets.push({ x: gunX, y: H - 56, vy: -8 });
+        if (tick % 65 === 1) {
+          blocks.push({ x: 35 + R(W - 110), y: -36, size: 46, hp: 4 + R(8), vy: 1.5 });
+        }
+
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          bullets[i].y += bullets[i].vy;
+          if (bullets[i].y < -10) bullets.splice(i, 1);
+        }
+
+        for (let j = blocks.length - 1; j >= 0; j--) {
+          const b = blocks[j];
+          b.y += b.vy;
+
+          for (let i = bullets.length - 1; i >= 0; i--) {
+            const bl = bullets[i];
+            if (bl.x > b.x && bl.x < b.x + b.size && bl.y > b.y && bl.y < b.y + b.size) {
+              bullets.splice(i, 1);
+              b.hp--;
+              score++;
+              status.textContent = `Punkte: ${score}`;
+              if (b.hp <= 0) {
+                blocks.splice(j, 1);
+                break;
+              }
+            }
+          }
+
+          if (blocks[j] && b.y + b.size > H - 44) {
+            over = true;
+            status.textContent = `💥 Block durchgebrochen! Punkte: ${score} · Tippen für Neustart`;
+          }
+        }
+      }
+
+      ctx.fillStyle = '#0c0918';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#a3e635';
+      bullets.forEach((bl) => ctx.fillRect(bl.x - 2, bl.y - 8, 4, 10));
+
+      blocks.forEach((b) => {
+        ctx.fillStyle = '#7c3aed';
+        ctx.beginPath(); ctx.roundRect(b.x, b.y, b.size, b.size, 10); ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = '900 18px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(b.hp), b.x + b.size / 2, b.y + b.size / 2 + 6);
+      });
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(gunX - 18, H - 44, 36, 22);
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    reset();
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 24. EPIC PLANE
+// ==========================================
+registerGame({
+  id: 'epic-plane',
+  title: 'Epic Plane',
+  icon: '✈️',
+  cat: 'Action',
+  desc: 'Steuere dein Flugzeug hoch/runter (Finger/Maus/Pfeiltasten), sammle Sterne und weiche Wolkenblöcken aus.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 480, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let py = H / 2, score = 0, over = false, items = [], tick = 0;
+
+    const reset = () => {
+      py = H / 2; score = 0; over = false; items = []; tick = 0;
+      status.textContent = 'Punkte: 0 · Sterne sammeln & ausweichen';
+    };
+
+    const setY = (clientY) => {
+      const rect = cv.getBoundingClientRect();
+      py = Math.max(20, Math.min(H - 20, ((clientY - rect.top) / rect.height) * H));
+    };
+
+    cv.onpointerdown = (e) => {
+      if (over) { reset(); return; }
+      cv.setPointerCapture(e.pointerId);
+      setY(e.clientY);
+    };
+    cv.onpointermove = (e) => { if (!over && (e.buttons || e.pointerType === 'touch')) setY(e.clientY); };
+    bindKeys(['ArrowUp', 'w', 'ArrowDown', 's', ' '], (e, firstPress) => {
+      if (over && e.key === ' ' && firstPress) reset();
+    });
+
+    const loop = () => {
+      if (!over) {
+        if (keys.ArrowUp || keys.w) py = Math.max(20, py - 4.5);
+        if (keys.ArrowDown || keys.s) py = Math.min(H - 20, py + 4.5);
+
+        tick++;
+        if (tick % 42 === 1) {
+          items.push({ x: W + 20, y: 30 + R(H - 60), isStar: R(3) === 0, vx: 3.6 });
+        }
+
+        const px = 85;
+        for (let i = items.length - 1; i >= 0; i--) {
+          const it = items[i];
+          it.x -= it.vx;
+          if (Math.hypot(it.x - px, it.y - py) < 22) {
+            if (it.isStar) {
+              score += 5;
+              status.textContent = `⭐ +5 Punkte! Stand: ${score}`;
+              items.splice(i, 1);
+              continue;
+            } else {
+              over = true;
+              status.textContent = `💥 Treffer! Punkte: ${score} · Tippen für Neustart`;
+            }
+          }
+          if (it.x < -30) items.splice(i, 1);
+        }
+      }
+
+      ctx.fillStyle = '#0e172a';
+      ctx.fillRect(0, 0, W, H);
+      items.forEach((it) => {
+        ctx.fillStyle = it.isStar ? '#facc15' : '#ef4444';
+        ctx.beginPath(); ctx.arc(it.x, it.y, 12, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath(); ctx.arc(85, py, 14, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    reset();
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 25. MERGE
+// ==========================================
+registerGame({
+  id: 'merge',
+  title: 'Merge',
+  icon: '✨',
+  cat: 'Puzzle',
+  desc: 'Tippe auf ein Feld mit Nachbarn gleicher Stufe, um es auf die nächste Stufe zu erhöhen.',
+  run({ body, status }) {
+    const N = 4;
+    const SYMS = ['✨', '🔮', '⚡', '🔥', '👑', '🌟'];
+    let grid = Array.from({ length: N * N }, () => R(3));
+    let score = 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = `display:grid;grid-template-columns:repeat(${N},64px);gap:8px`;
+    body.append(wrap);
+
+    const neighbors = (idx) => {
+      const r = Math.floor(idx / N), c = idx % N, out = [];
+      if (r > 0) out.push((r - 1) * N + c);
+      if (r < N - 1) out.push((r + 1) * N + c);
+      if (c > 0) out.push(r * N + (c - 1));
+      if (c < N - 1) out.push(r * N + (c + 1));
+      return out;
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      grid.forEach((lvl, idx) => {
+        const btn = $('button', 'sz-btn', `${SYMS[lvl % SYMS.length]}<br><small>Stufe ${lvl + 1}</small>`);
+        btn.style.cssText = 'width:64px;height:64px;padding:4px;font-size:16px;background:var(--sz-surface-2)';
+        btn.onclick = () => {
+          const match = neighbors(idx).find((n) => grid[n] === lvl);
+          if (match !== undefined) {
+            grid[match] = R(3);
+            grid[idx] = lvl + 1;
+            score += (lvl + 1) * 10;
+            status.textContent = `✨ Verschmolzen zu Stufe ${grid[idx] + 1}! Punkte: ${score}`;
+            render();
+          } else {
+            status.textContent = 'Kein direkter Nachbar mit gleicher Stufe';
+          }
+        };
+        wrap.append(btn);
+      });
+    };
+
+    status.textContent = `Punkte: ${score} · Gleiche Nachbarn verschmelzen`;
+    render();
+  }
+});
+
+// ==========================================
+// 26. BRAWL STARS (ARENA-MODUS)
+// ==========================================
+registerGame({
+  id: 'brawl-stars',
+  title: 'Brawl Stars (Arena-Modus)',
+  icon: '🔥',
+  cat: 'Action',
+  desc: 'Bewege dich mit Finger/Maus oder WASD/Pfeiltasten und tippe/drücke Leertaste zum Schießen.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 480, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let px = 110, py = H / 2, ex = W - 95, ey = H / 2;
+    let score = 0, shots = [];
+
+    const fire = () => shots.push({ x: px + 18, y: py, vx: 7 });
+
+    cv.onpointerdown = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * W;
+      const y = ((e.clientY - rect.top) / rect.height) * H;
+      if (x > px + 40) fire();
+      else { px = Math.max(24, Math.min(W - 24, x)); py = Math.max(24, Math.min(H - 24, y)); }
+    };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', 'ArrowUp', 'w', 'ArrowDown', 's', ' '], (e, firstPress) => {
+      if (e.key === ' ' && e.type === 'keydown' && firstPress) fire();
+    });
+
+    const loop = () => {
+      if (keys.ArrowLeft || keys.a) px = Math.max(24, px - 4.5);
+      if (keys.ArrowRight || keys.d) px = Math.min(W - 24, px + 4.5);
+      if (keys.ArrowUp || keys.w) py = Math.max(24, py - 4.5);
+      if (keys.ArrowDown || keys.s) py = Math.min(H - 24, py + 4.5);
+
+      ey = H / 2 + Math.sin(performance.now() * 0.0025) * 90;
+
+      for (let i = shots.length - 1; i >= 0; i--) {
+        const s = shots[i];
+        s.x += s.vx;
+        if (Math.hypot(s.x - ex, s.y - ey) < 22) {
+          score += 10;
+          status.textContent = `🔥 Treffer! Punkte: ${score}`;
+          shots.splice(i, 1);
+          continue;
+        }
+        if (s.x > W + 20) shots.splice(i, 1);
+      }
+
+      ctx.fillStyle = '#141129';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#facc15';
+      shots.forEach((s) => { ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2); ctx.fill(); });
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath(); ctx.arc(ex, ey, 16, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `Punkte: 0 · Leertaste oder rechts tippen zum Schießen`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 27. HARVEST.IO
+// ==========================================
+registerGame({
+  id: 'harvest-io',
+  title: 'Harvest.io',
+  icon: '🌾',
+  cat: 'Action',
+  desc: 'Steuere deinen Spieler mit Finger/Maus oder WASD/Pfeiltasten und sammle Weizenbündel ein.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const W = 480, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let px = W / 2, py = H / 2, harvested = 0;
+    let crops = Array.from({ length: 8 }, () => ({ x: 40 + R(W - 80), y: 40 + R(H - 80) }));
+
+    const moveTo = (clientX, clientY) => {
+      const rect = cv.getBoundingClientRect();
+      px = Math.max(20, Math.min(W - 20, ((clientX - rect.left) / rect.width) * W));
+      py = Math.max(20, Math.min(H - 20, ((clientY - rect.top) / rect.height) * H));
+    };
+
+    cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); moveTo(e.clientX, e.clientY); };
+    cv.onpointermove = (e) => { if (e.buttons || e.pointerType === 'touch') moveTo(e.clientX, e.clientY); };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', 'ArrowUp', 'w', 'ArrowDown', 's']);
+
+    const loop = () => {
+      if (keys.ArrowLeft || keys.a) px = Math.max(20, px - 4);
+      if (keys.ArrowRight || keys.d) px = Math.min(W - 20, px + 4);
+      if (keys.ArrowUp || keys.w) py = Math.max(20, py - 4);
+      if (keys.ArrowDown || keys.s) py = Math.min(H - 20, py + 4);
+
+      const radius = 14 + Math.min(14, harvested * 0.4);
+      for (let i = crops.length - 1; i >= 0; i--) {
+        if (Math.hypot(crops[i].x - px, crops[i].y - py) < radius + 8) {
+          harvested++;
+          crops.splice(i, 1);
+          crops.push({ x: 35 + R(W - 70), y: 35 + R(H - 70) });
+          status.textContent = `🌾 Geerntet: ${harvested}`;
+        }
+      }
+
+      ctx.fillStyle = '#1a2e1a';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#facc15';
+      crops.forEach((c) => { ctx.beginPath(); ctx.arc(c.x, c.y, 7, 0, Math.PI * 2); ctx.fill(); });
+      ctx.fillStyle = '#22c55e';
+      ctx.beginPath(); ctx.arc(px, py, radius, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `🌾 Geerntet: 0 · Weizen einsammeln`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 28. BTD 6 (TOWER DEFENSE)
+// ==========================================
+registerGame({
+  id: 'btd-6',
+  title: 'BTD 6 (Tower Defense)',
+  icon: '🎈',
+  cat: 'Strategie',
+  desc: 'Tippe auf die Karte, um Verteidigungstürme zu platzieren, die vorbeiziehende Ballons treffen.',
+  run({ body, status }) {
+    const { trackRaf } = makeArcadeCanvasRuntime();
+    const W = 480, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let towers = [{ x: 160, y: 110 }, { x: 310, y: 210 }];
+    let balloons = [];
+    let popped = 0, tick = 0;
+
+    cv.onpointerdown = (e) => {
+      if (towers.length >= 6) return;
+      const rect = cv.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * W;
+      const y = ((e.clientY - rect.top) / rect.height) * H;
+      towers.push({ x, y });
+      status.textContent = `Turm platziert (${towers.length}/6) · Geplatzt: ${popped}`;
+    };
+
+    const loop = () => {
+      tick++;
+      if (tick % 65 === 1) balloons.push({ x: 20, y: 160, vx: 1.8, hp: 2 });
+
+      for (let i = balloons.length - 1; i >= 0; i--) {
+        const b = balloons[i];
+        b.x += b.vx;
+        if (tick % 24 === 0) {
+          const inRange = towers.some((t) => Math.hypot(t.x - b.x, t.y - b.y) < 115);
+          if (inRange) {
+            b.hp--;
+            if (b.hp <= 0) {
+              popped++;
+              balloons.splice(i, 1);
+              status.textContent = `🎈 Geplatzt: ${popped} · Türme: ${towers.length}/6`;
+              continue;
+            }
+          }
+        }
+        if (b.x > W + 20) balloons.splice(i, 1);
+      }
+
+      ctx.fillStyle = '#132a1e';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = '#a16207';
+      ctx.lineWidth = 24;
+      ctx.beginPath(); ctx.moveTo(0, 160); ctx.lineTo(W, 160); ctx.stroke();
+
+      towers.forEach((t) => {
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath(); ctx.arc(t.x, t.y, 13, 0, Math.PI * 2); ctx.fill();
+      });
+
+      balloons.forEach((b) => {
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath(); ctx.arc(b.x, b.y, 12, 0, Math.PI * 2); ctx.fill();
+      });
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `Geplatzt: 0 · Tippen zum Platzieren von Türmen (max. 6)`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 29. DRILL AND CONNECT
+// ==========================================
+registerGame({
+  id: 'drill-and-connect',
+  title: 'Drill and Connect',
+  icon: '⛏️',
+  cat: 'Puzzle',
+  desc: 'Tippe oder ziehe benachbarte Gesteinsfelder (🟫) ab Start (S) bis zum Ziel (Z), um sie zu graben.',
+  run({ body, status }) {
+    const N = 6;
+    let rock = Array(N * N).fill(1);
+    const start = 0, goal = N * N - 1;
+    rock[start] = 0;
+    rock[goal] = 0;
+    let dug = [start];
+
+    const wrap = $('div', 'sz-lm-grid');
+    wrap.style.gridTemplateColumns = `repeat(${N}, 46px)`;
+    body.append(wrap);
+
+    const isAdj = (a, b) => {
+      const ar = Math.floor(a / N), ac = a % N;
+      const br = Math.floor(b / N), bc = b % N;
+      return Math.abs(ar - br) + Math.abs(ac - bc) === 1;
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      for (let i = 0; i < N * N; i++) {
+        const isDug = dug.includes(i);
+        const label = i === start ? 'S' : i === goal ? 'Z' : rock[i] ? '🟫' : '';
+        const cell = $('button', 'sz-lm-cell' + (isDug ? ' path' : '') + (i === goal ? ' goal' : ''), label);
+        cell.onclick = () => {
+          const last = dug[dug.length - 1];
+          if (!isDug && isAdj(last, i)) {
+            rock[i] = 0;
+            dug.push(i);
+            render();
+            status.textContent = i === goal
+              ? `🏆 Verbindung gegraben in ${dug.length - 1} Schritten!`
+              : `Schritte: ${dug.length - 1} · Weiter Richtung Z`;
+          }
+        };
+        wrap.append(cell);
+      }
+    };
+
+    status.textContent = `Von S nach Z durch Gestein graben`;
+    render();
+  }
+});
+
+// ==========================================
+// 30. HAY DAY (HOF-MINI)
+// ==========================================
+registerGame({
+  id: 'hay-day',
+  title: 'Hay Day (Hof-Mini)',
+  icon: '🚜',
+  cat: 'Strategie',
+  desc: 'Tippe auf leere Felder zum Säen und ernte reifen Weizen (🌾) für Münzen.',
+  run({ body, status }) {
+    const { later } = makeRuntime();
+    let coins = 50;
+    let plots = [0, 2, 1, 0, 2, 0];
+
+    const wrap = $('div', 'sz-hd-grid');
+    body.append(wrap);
+
+    const growTick = () => {
+      plots = plots.map((p) => (p === 1 ? 2 : p));
+      render();
+      later(growTick, 1600);
+    };
+
+    const render = () => {
+      wrap.innerHTML = '';
+      plots.forEach((p, idx) => {
+        const txt = p === 0 ? '🌱 Säen' : p === 1 ? '⏳ Wächst…' : '🌾 Ernten (+15)';
+        const btn = $('button', 'sz-hd-plot', `<span>Feld ${idx + 1}</span><span>${txt}</span>`);
+        btn.onclick = () => {
+          if (p === 0) plots[idx] = 1;
+          else if (p === 2) { coins += 15; plots[idx] = 0; }
+          render();
+        };
+        wrap.append(btn);
+      });
+      status.textContent = `Münzen: ${coins} · Felder säen & reife Ernte einsammeln`;
+    };
+
+    render();
+    later(growTick, 1600);
+  }
+});
+
+// ==========================================
+// 31. MONUMENT VALLEY
+// ==========================================
+registerGame({
+  id: 'monument-valley',
+  title: 'Monument Valley',
+  icon: '🏛️',
+  cat: 'Puzzle',
+  desc: 'Drehe die Brücke gerade (waagerecht), damit deine Figur (🟣) zum Portal (🟢) gehen kann. Dein Fortschritt bleibt gespeichert.',
+  run({ body, status }) {
+    const saved = loadGameProgress('monument-valley', { rot: 0, solved: false });
+    let rot = saved.rot || 0;
+    let solved = !!saved.solved;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px';
+
+    const view = $('div', null, '');
+    view.style.cssText = 'width:260px;height:170px;border-radius:16px;background:var(--sz-surface-2);display:flex;align-items:center;justify-content:space-around;font-size:32px;padding:12px';
+
+    const bridge = $('div', null, '🌉');
+    bridge.style.transition = 'transform 180ms ease';
+    view.append('🟣', bridge, '🟢');
+
+    const ctrls = $('div', null, '');
+    ctrls.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    const rotBtn = $('button', 'sz-btn sz-btn-primary', '🔄 Brücke drehen');
+    const walkBtn = $('button', 'sz-btn sz-btn-lime', '🚶 Gehen');
+    ctrls.append(rotBtn, walkBtn);
+
+    wrap.append(view, ctrls);
+    body.append(wrap);
+
+    const render = () => {
+      bridge.style.transform = `rotate(${rot * 90}deg)`;
+      saveGameProgress('monument-valley', { rot, solved });
+      if (solved) {
+        status.textContent = '🏛️ Portal erreicht! (Gespeichert)';
+      } else {
+        status.textContent = rot % 2 === 0
+          ? 'Brücke ausgerichtet – gehe zum Portal!'
+          : 'Brücke verdreht – zum Ausrichten drehen';
+      }
+    };
+
+    rotBtn.onclick = () => { rot = (rot + 1) % 4; render(); };
+    walkBtn.onclick = () => {
+      if (rot % 2 === 0) { solved = true; render(); }
+      else status.textContent = '⚠ Weg unterbrochen – erst die Brücke gerade drehen!';
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 32. CUT THE ROPE
+// ==========================================
+registerGame({
+  id: 'cut-the-rope',
+  title: 'Cut the Rope',
+  icon: '🍬',
+  cat: 'Puzzle',
+  desc: 'Kappe das Seil, damit das Bonbon (🍬) zum Monster (🐸) fällt.',
+  run({ body, status }) {
+    const saved = loadGameProgress('cut-the-rope', { wins: 0 });
+    let wins = saved.wins || 0;
+    let cut = false, y = 40;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const box = $('div', null, '');
+    box.style.cssText = 'position:relative;width:240px;height:220px;border-radius:16px;background:var(--sz-surface-2);overflow:hidden';
+
+    const candy = $('div', null, '🍬');
+    candy.style.cssText = 'position:absolute;left:104px;font-size:28px;transition:top 260ms ease-in';
+    const rope = $('div', null, '|');
+    rope.style.cssText = 'position:absolute;left:115px;top:0;font-size:22px;font-weight:900';
+    const frog = $('div', null, '🐸');
+    frog.style.cssText = 'position:absolute;left:102px;bottom:14px;font-size:32px';
+
+    box.append(rope, candy, frog);
+    const cutBtn = $('button', 'sz-btn sz-btn-primary', '✂️ Seil kappen');
+    const resetBtn = $('button', 'sz-btn sz-btn-ghost', 'Neu spannen');
+    wrap.append(box, cutBtn, resetBtn);
+    body.append(wrap);
+
+    const sync = () => {
+      candy.style.top = `${y}px`;
+      rope.style.opacity = cut ? '0.15' : '1';
+      saveGameProgress('cut-the-rope', { wins });
+      status.textContent = `Gefangen: ${wins} · ${cut ? 'Bonbon gefallen!' : 'Seil kappen zum Fallenlassen'}`;
+    };
+
+    cutBtn.onclick = () => { if (!cut) { cut = true; y = 165; wins++; sync(); } };
+    resetBtn.onclick = () => { cut = false; y = 40; sync(); };
+
+    sync();
+  }
+});
+
+// ==========================================
+// 33. ANGRY BIRDS
+// ==========================================
+registerGame({
+  id: 'angry-birds',
+  title: 'Angry Birds',
+  icon: '🐦',
+  cat: 'Action',
+  desc: 'Wähle den Winkel und feuere den Vogel auf das Ziel (Trefferbereich: 30°–50°).',
+  run({ body, status }) {
+    const saved = loadGameProgress('angry-birds', { hits: 0, angle: 35 });
+    let hits = saved.hits || 0;
+    let angle = saved.angle ?? 35;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:460px';
+    const slider = $('input', null, '');
+    slider.type = 'range'; slider.min = '10'; slider.max = '75'; slider.value = String(angle);
+    const fireBtn = $('button', 'sz-btn sz-btn-primary', '🚀 Abschuss');
+    const out = $('div', null, '');
+    out.style.cssText = 'padding:16px;border-radius:14px;background:var(--sz-surface-2);width:100%;text-align:center;font-weight:800';
+    wrap.append(slider, fireBtn, out);
+    body.append(wrap);
+
+    const save = () => saveGameProgress('angry-birds', { hits, angle });
+
+    slider.oninput = () => {
+      angle = Number(slider.value);
+      save();
+      status.textContent = `Treffer: ${hits} · Winkel: ${angle}° (Zielbereich: 30°–50°)`;
+    };
+
+    fireBtn.onclick = () => {
+      if (angle >= 30 && angle <= 50) {
+        hits++;
+        out.textContent = `🎯 Treffer bei ${angle}°! Gesamttreffer: ${hits}`;
+      } else {
+        out.textContent = `💨 Daneben bei ${angle}° – versuche einen Winkel zwischen 30° und 50°`;
+      }
+      save();
+      status.textContent = `Treffer: ${hits} · Winkel: ${angle}°`;
+    };
+
+    status.textContent = `Treffer: ${hits} · Winkel: ${angle}° (Zielbereich: 30°–50°)`;
+  }
+});
+
+// ==========================================
+// 34. CROSSY ROAD
+// ==========================================
+registerGame({
+  id: 'crossy-road',
+  title: 'Crossy Road',
+  icon: '🐔',
+  cat: 'Action',
+  desc: 'Steuere deine Figur vorwärts/seitwärts und weiche Fahrzeugen aus.',
+  run({ body, status }) {
+    const saved = loadGameProgress('crossy-road', { best: 0 });
+    let best = saved.best || 0;
+    let step = 0, laneX = 2;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const board = $('div', null, '');
+    board.style.cssText = 'padding:20px;border-radius:16px;background:var(--sz-surface-2);min-width:260px;text-align:center;font-size:20px;font-weight:800';
+
+    const btns = $('div', null, '');
+    btns.style.cssText = 'display:flex;gap:8px';
+    const leftBtn = $('button', 'sz-btn sz-btn-ghost', '←');
+    const fwdBtn = $('button', 'sz-btn sz-btn-primary', '↑ Vor');
+    const rightBtn = $('button', 'sz-btn sz-btn-ghost', '→');
+    btns.append(leftBtn, fwdBtn, rightBtn);
+    wrap.append(board, btns);
+    body.append(wrap);
+
+    const render = () => {
+      if (step > best) best = step;
+      saveGameProgress('crossy-road', { best });
+      const carLane = (step * 2 + 1) % 5;
+      if (carLane === laneX && step > 0) {
+        step = 0;
+        board.textContent = `💥 Auto erwischt! Neustart · Rekord: ${best}`;
+      } else {
+        board.textContent = `🐔 Spur ${step} · Pos ${laneX + 1}/5 · Gefahr auf ${carLane + 1}`;
+      }
+      status.textContent = `Aktuell: ${step} · Rekord (gespeichert): ${best}`;
+    };
+
+    leftBtn.onclick = () => { laneX = Math.max(0, laneX - 1); render(); };
+    rightBtn.onclick = () => { laneX = Math.min(4, laneX + 1); render(); };
+    fwdBtn.onclick = () => { step++; render(); };
+
+    render();
+  }
+});
+
+// ==========================================
+// 35. GEOMETRY DASH
+// ==========================================
+registerGame({
+  id: 'geometry-dash',
+  title: 'Geometry Dash',
+  icon: '💠',
+  cat: 'Action',
+  desc: 'Springe im richtigen Takt über Stacheln und sammle Sterne.',
+  run({ body, status }) {
+    const saved = loadGameProgress('geometry-dash', { stars: 0 });
+    let stars = saved.stars || 0;
+    let spikePos = 6;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:440px';
+    const track = $('div', null, '');
+    track.style.cssText = 'padding:18px;border-radius:14px;background:var(--sz-surface-2);width:100%;text-align:center;font-family:monospace;font-size:20px';
+    const jumpBtn = $('button', 'sz-btn sz-btn-primary', '⬆️ Springen');
+    wrap.append(track, jumpBtn);
+    body.append(wrap);
+
+    const drawTrack = (jumped) => {
+      const cells = Array.from({ length: 8 }, (_, i) => {
+        if (i === 1) return jumped ? '🟦' : '💠';
+        if (i === spikePos) return '🔺';
+        return '·';
+      });
+      track.textContent = cells.join(' ');
+    };
+
+    jumpBtn.onclick = () => {
+      drawTrack(true);
+      stars++;
+      spikePos = 3 + R(5);
+      saveGameProgress('geometry-dash', { stars });
+      status.textContent = `⭐ Sterne (gespeichert): ${stars} · Sauber gesprungen!`;
+    };
+
+    drawTrack(false);
+    status.textContent = `⭐ Sterne (gespeichert): ${stars} · Springen zum Sammeln`;
+  }
+});
+
+// ==========================================
+// 36. PLANTS VS. ZOMBIES
+// ==========================================
+registerGame({
+  id: 'plants-vs-zombies',
+  title: 'Plants vs. Zombies',
+  icon: '🌻',
+  cat: 'Strategie',
+  desc: 'Setze Verteidigungspflanzen auf die Reihe, um anrückende Zombies aufzuhalten.',
+  run({ body, status }) {
+    const saved = loadGameProgress('plants-vs-zombies', { sun: 75, waves: 0 });
+    let sun = saved.sun ?? 75;
+    let waves = saved.waves || 0;
+    let lane = ['🌱', '·', '·', '·', '🧟'];
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const row = $('div', null, '');
+    row.style.cssText = 'display:flex;gap:8px';
+    const waveBtn = $('button', 'sz-btn sz-btn-primary', '🧟 Welle starten');
+    wrap.append(row, waveBtn);
+    body.append(wrap);
+
+    const save = () => saveGameProgress('plants-vs-zombies', { sun, waves });
+
+    const render = () => {
+      row.innerHTML = '';
+      lane.forEach((cell, idx) => {
+        const b = $('button', 'sz-btn sz-btn-ghost', cell);
+        b.style.cssText = 'width:50px;height:50px;padding:0;font-size:22px';
+        b.onclick = () => {
+          if (cell === '·' && sun >= 25) {
+            sun -= 25;
+            lane[idx] = '🌻';
+            save();
+            render();
+          }
+        };
+        row.append(b);
+      });
+      status.textContent = `☀️ Sonne: ${sun} · Abgewehrte Wellen: ${waves}`;
+    };
+
+    waveBtn.onclick = () => {
+      const plants = lane.filter((x) => x === '🌻' || x === '🌱').length;
+      if (plants >= 1) {
+        waves++;
+        sun += 25;
+        save();
+        status.textContent = `🌻 Welle abgewehrt! Wellen: ${waves} · Sonne: ${sun}`;
+      } else {
+        status.textContent = 'Setze erst eine Pflanze (25 Sonne)';
+      }
+      render();
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 37. TETRIS
+// ==========================================
+registerGame({
+  id: 'tetris',
+  title: 'Tetris',
+  icon: '🧱',
+  cat: 'Puzzle',
+  desc: 'Setze Blöcke in Spalten, fülle Reihen auf und speichere deinen Punktestand.',
+  run({ body, status }) {
+    const saved = loadGameProgress('tetris', { lines: 0, score: 0 });
+    let lines = saved.lines || 0;
+    let score = saved.score || 0;
+    let cols = [0, 0, 0, 0, 0, 0];
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const grid = $('div', null, '');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(6,44px);gap:6px';
+    wrap.append(grid);
+    body.append(wrap);
+
+    const render = () => {
+      grid.innerHTML = '';
+      cols.forEach((h, idx) => {
+        const btn = $('button', 'sz-btn sz-btn-ghost', `S${idx + 1}\n${h}`);
+        btn.style.cssText = 'width:44px;height:56px;padding:0;font-size:13px;white-space:pre-line';
+        btn.onclick = () => {
+          cols[idx]++;
+          if (cols.every((v) => v > 0)) {
+            cols = cols.map((v) => Math.max(0, v - 1));
+            lines++;
+            score += 100;
+          } else {
+            score += 10;
+          }
+          saveGameProgress('tetris', { lines, score });
+          render();
+        };
+        grid.append(btn);
+      });
+      status.textContent = `Punkte: ${score} · Reihen: ${lines}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 38. PAC-MAN
+// ==========================================
+registerGame({
+  id: 'pac-man',
+  title: 'Pac-Man',
+  icon: '🟡',
+  cat: 'Arcade',
+  desc: 'Steuere Pac-Man durch das Raster, sammle Punkte und meide Geister.',
+  run({ body, status }) {
+    const saved = loadGameProgress('pac-man', { pellets: 0 });
+    let pellets = saved.pellets || 0;
+    let pos = 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const grid = $('div', null, '');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(5,48px);gap:6px';
+    wrap.append(grid);
+    body.append(wrap);
+
+    const render = () => {
+      grid.innerHTML = '';
+      for (let i = 0; i < 15; i++) {
+        const isPac = i === pos;
+        const isGhost = i === 12;
+        const lbl = isPac ? '🟡' : isGhost ? '👻' : '·';
+        const btn = $('button', 'sz-btn sz-btn-ghost', lbl);
+        btn.style.cssText = 'width:48px;height:48px;padding:0;font-size:20px';
+        btn.onclick = () => {
+          if (i === 12) {
+            pos = 0;
+            status.textContent = `👻 Geist erwischt – zurück zum Start · Punkte: ${pellets}`;
+            render();
+            return;
+          }
+          pos = i;
+          pellets += 10;
+          saveGameProgress('pac-man', { pellets });
+          render();
+        };
+        grid.append(btn);
+      }
+      status.textContent = `🟡 Punkte (gespeichert): ${pellets}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 39. 2048
+// ==========================================
+registerGame({
+  id: '2048',
+  title: '2048',
+  icon: '🔢',
+  cat: 'Puzzle',
+  desc: 'Tippe auf zwei gleiche Zahlenkacheln, um sie zu verschmelzen – leere Felder (·) füllen sich mit 2ern auf.',
+  run({ body, status }) {
+    const saved = loadGameProgress('2048', { tiles: [2, 2, 4, 4, 2, 8, 2, 4, 2], best: 8 });
+    let tiles = Array.isArray(saved.tiles) && saved.tiles.length === 9 ? [...saved.tiles] : [2, 2, 4, 4, 2, 8, 2, 4, 2];
+    let best = saved.best || Math.max(...tiles);
+    let picked = null;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const grid = $('div', null, '');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,68px);gap:8px';
+    wrap.append(grid);
+    body.append(wrap);
+
+    const render = () => {
+      best = Math.max(best, ...tiles);
+      saveGameProgress('2048', { tiles, best });
+      grid.innerHTML = '';
+      tiles.forEach((v, idx) => {
+        const isPicked = picked === idx;
+        const btn = $('button', 'sz-btn ' + (isPicked ? 'sz-btn-lime' : 'sz-btn-primary'), v > 0 ? String(v) : '·');
+        btn.style.cssText = 'width:68px;height:68px;padding:0;font-size:20px;font-weight:900';
+        btn.onclick = () => {
+          if (v === 0) {
+            tiles[idx] = 2;
+            picked = null;
+            render();
+            return;
+          }
+          if (picked === null) {
+            picked = idx;
+            render();
+          } else if (picked === idx) {
+            picked = null;
+            render();
+          } else if (tiles[picked] === v) {
+            tiles[idx] = v * 2;
+            tiles[picked] = 0;
+            picked = null;
+            render();
+          } else {
+            picked = idx;
+            render();
+          }
+        };
+        grid.append(btn);
+      });
+      status.textContent = `Höchste Kachel (gespeichert): ${best} · ${picked !== null ? 'Passende Zahl antippen' : 'Zahl wählen'}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 40. MINESWEEPER
+// ==========================================
+registerGame({
+  id: 'minesweeper',
+  title: 'Minesweeper',
+  icon: '💣',
+  cat: 'Puzzle',
+  desc: 'Decke sichere Felder auf, ohne die Mine (Feld 5) zu treffen.',
+  run({ body, status }) {
+    const MINE = 4;
+    const saved = loadGameProgress('minesweeper', { revealed: [], won: false });
+    let revealed = Array.isArray(saved.revealed) ? [...saved.revealed] : [];
+    let won = !!saved.won;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(3,64px);gap:8px';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('minesweeper', { revealed, won });
+      wrap.innerHTML = '';
+      for (let i = 0; i < 9; i++) {
+        const open = revealed.includes(i);
+        const lbl = open ? (i === MINE ? '💣' : '✔') : '?';
+        const btn = $('button', 'sz-btn ' + (open ? 'sz-btn-ghost' : 'sz-btn-primary'), lbl);
+        btn.style.cssText = 'width:64px;height:64px;padding:0;font-size:22px';
+        btn.onclick = () => {
+          if (i === MINE) {
+            revealed = [];
+            won = false;
+            status.textContent = '💥 Mine getroffen – Feld zurückgesetzt';
+            render();
+            return;
+          }
+          if (!revealed.includes(i)) revealed.push(i);
+          if (revealed.length >= 8) won = true;
+          render();
+        };
+        wrap.append(btn);
+      }
+      if (!status.textContent.includes('Mine getroffen')) {
+        status.textContent = won ? '🏆 Alle sicheren Felder aufgedeckt!' : `Aufgedeckt: ${revealed.length}/8 sichere Felder`;
+      }
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 41. SNAKE
+// ==========================================
+registerGame({
+  id: 'snake',
+  title: 'Snake',
+  icon: '🐍',
+  cat: 'Arcade',
+  desc: 'Sammle Futterpunkte, verlängere die Schlange und speichere deinen Rekord.',
+  run({ body, status }) {
+    const saved = loadGameProgress('snake', { score: 0, best: 0 });
+    let score = saved.score || 0;
+    let best = saved.best || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px';
+    const eatBtn = $('button', 'sz-btn sz-btn-primary', '🍎 Futter fressen (+10)');
+    const resetScoreBtn = $('button', 'sz-btn sz-btn-ghost', 'Runde nullen');
+    wrap.append(eatBtn, resetScoreBtn);
+    body.append(wrap);
+
+    const sync = () => {
+      if (score > best) best = score;
+      saveGameProgress('snake', { score, best });
+      status.textContent = `🐍 Punkte: ${score} · Rekord: ${best}`;
+    };
+
+    eatBtn.onclick = () => { score += 10; sync(); };
+    resetScoreBtn.onclick = () => { score = 0; sync(); };
+
+    sync();
+  }
+});
+
+// ==========================================
+// 42. FLAPPY BIRD
+// ==========================================
+registerGame({
+  id: 'flappy-bird',
+  title: 'Flappy Bird',
+  icon: '🐤',
+  cat: 'Arcade',
+  desc: 'Tippe zum Flattern, passiere Rohre und behalte deinen Highscore.',
+  run({ body, status }) {
+    const saved = loadGameProgress('flappy-bird', { score: 0, best: 0 });
+    let score = saved.score || 0;
+    let best = saved.best || 0;
+
+    const flapBtn = $('button', 'sz-btn sz-btn-primary', '🐤 Flattern & Rohr passieren');
+    body.append(flapBtn);
+
+    const sync = () => {
+      if (score > best) best = score;
+      saveGameProgress('flappy-bird', { score, best });
+      status.textContent = `Punkte: ${score} · Rekord: ${best}`;
+    };
+
+    flapBtn.onclick = () => { score++; sync(); };
+    sync();
+  }
+});
+
+// ==========================================
+// 43. PONG
+// ==========================================
+registerGame({
+  id: 'pong',
+  title: 'Pong',
+  icon: '🏓',
+  cat: 'Sport & Action',
+  desc: 'Schlage den Ball mit dem Schläger zurück und sammle Ballwechsel-Punkte.',
+  run({ body, status }) {
+    const saved = loadGameProgress('pong', { rallies: 0, best: 0 });
+    let rallies = saved.rallies || 0;
+    let best = saved.best || 0;
+
+    const hitBtn = $('button', 'sz-btn sz-btn-primary', '🏓 Ball zurückschlagen');
+    body.append(hitBtn);
+
+    const sync = () => {
+      if (rallies > best) best = rallies;
+      saveGameProgress('pong', { rallies, best });
+      status.textContent = `Ballwechsel: ${rallies} · Rekord: ${best}`;
+    };
+
+    hitBtn.onclick = () => { rallies++; sync(); };
+    sync();
+  }
+});
+
+// ==========================================
+// 44. BREAKOUT
+// ==========================================
+registerGame({
+  id: 'breakout',
+  title: 'Breakout',
+  icon: '🧱',
+  cat: 'Arcade',
+  desc: 'Räume die Steine mit dem Ball ab – dein Fortschritt bleibt erhalten.',
+  run({ body, status }) {
+    const saved = loadGameProgress('breakout', { bricks: [1, 1, 1, 1, 1, 1], score: 0 });
+    let bricks = Array.isArray(saved.bricks) && saved.bricks.length === 6 ? [...saved.bricks] : [1, 1, 1, 1, 1, 1];
+    let score = saved.score || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(3,72px);gap:8px';
+    body.append(wrap);
+
+    const render = () => {
+      if (bricks.every((b) => b === 0)) bricks = [1, 1, 1, 1, 1, 1];
+      saveGameProgress('breakout', { bricks, score });
+      wrap.innerHTML = '';
+      bricks.forEach((alive, idx) => {
+        const btn = $('button', 'sz-btn ' + (alive ? 'sz-btn-primary' : 'sz-btn-ghost'), alive ? '🧱' : '·');
+        btn.style.cssText = 'width:72px;height:44px;padding:0;font-size:20px';
+        btn.onclick = () => {
+          if (bricks[idx]) { bricks[idx] = 0; score += 20; render(); }
+        };
+        wrap.append(btn);
+      });
+      status.textContent = `Punkte (gespeichert): ${score}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 45. SIMON SAYS
+// ==========================================
+registerGame({
+  id: 'simon-says',
+  title: 'Simon Says',
+  icon: '🎛️',
+  cat: 'Puzzle',
+  desc: 'Merke dir die angezeigte Farbfolge und tippe sie in derselben Reihenfolge nach.',
+  run({ body, status }) {
+    const COLORS = ['🔴', '🟢', '🔵', '🟡'];
+    const saved = loadGameProgress('simon-says', { level: 1 });
+    let level = saved.level || 1;
+    const buildSeq = (lvl) => Array.from({ length: lvl }, (_, i) => (lvl === 1 ? 0 : (R(COLORS.length) + i) % COLORS.length));
+    let seq = buildSeq(level);
+    let stepIdx = 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const seqBox = $('div', null, '');
+    seqBox.style.cssText = 'padding:10px 16px;border-radius:12px;background:var(--sz-surface-2);font-size:22px;letter-spacing:6px';
+    const grid = $('div', null, '');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,72px);gap:10px';
+    wrap.append(seqBox, grid);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('simon-says', { level });
+      seqBox.textContent = seq.map((i) => COLORS[i]).join(' ');
+      grid.innerHTML = '';
+
+      COLORS.forEach((emo, idx) => {
+        const btn = $('button', 'sz-btn sz-btn-ghost', emo);
+        btn.style.cssText = 'width:72px;height:72px;padding:0;font-size:28px';
+        btn.onclick = () => {
+          if (idx === seq[stepIdx]) {
+            stepIdx++;
+            if (stepIdx >= seq.length) {
+              level++;
+              seq = buildSeq(level);
+              stepIdx = 0;
+              status.textContent = `✔ Folge geschafft! Neues Level: ${level}`;
+              render();
+            } else {
+              status.textContent = `✔ Schritt ${stepIdx}/${seq.length} richtig`;
+            }
+          } else {
+            stepIdx = 0;
+            seq = buildSeq(level);
+            status.textContent = `✖ Falsche Farbe – neue Folge für Level ${level}`;
+            render();
+          }
+        };
+        grid.append(btn);
+      });
+
+      status.textContent = `Level ${level} · Folge (${seq.length} Farben) nachtippen`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 46. WHACK-A-MOLE
+// ==========================================
+registerGame({
+  id: 'whack-a-mole',
+  title: 'Whack-a-Mole',
+  icon: '🐹',
+  cat: 'Action',
+  desc: 'Treffe den Maulwurf (🐹) und speichere deine Trefferzahl.',
+  run({ body, status }) {
+    const saved = loadGameProgress('whack-a-mole', { hits: 0, mole: 0 });
+    let hits = saved.hits || 0;
+    let mole = saved.mole ?? 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(3,64px);gap:8px';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('whack-a-mole', { hits, mole });
+      wrap.innerHTML = '';
+      for (let i = 0; i < 6; i++) {
+        const btn = $('button', 'sz-btn ' + (i === mole ? 'sz-btn-primary' : 'sz-btn-ghost'), i === mole ? '🐹' : '🕳️');
+        btn.style.cssText = 'width:64px;height:64px;padding:0;font-size:24px';
+        btn.onclick = () => {
+          if (i === mole) { hits++; mole = (mole + 2) % 6; render(); }
+        };
+        wrap.append(btn);
+      }
+      status.textContent = `🐹 Treffer (gespeichert): ${hits}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 47. MEMORY
+// ==========================================
+registerGame({
+  id: 'memory',
+  title: 'Memory',
+  icon: '🃏',
+  cat: 'Puzzle',
+  desc: 'Decke gleiche Paare auf – aufgedeckte Paare bleiben gespeichert.',
+  run({ body, status }) {
+    const CARDS = ['🦊', '🦊', '🦉', '🦉', '🐼', '🐼'];
+    const saved = loadGameProgress('memory', { matched: [] });
+    let matched = Array.isArray(saved.matched) ? [...saved.matched] : [];
+    let first = null;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(3,68px);gap:8px';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('memory', { matched });
+      wrap.innerHTML = '';
+      CARDS.forEach((sym, idx) => {
+        const open = matched.includes(idx) || first === idx;
+        const btn = $('button', 'sz-btn ' + (open ? 'sz-btn-primary' : 'sz-btn-ghost'), open ? sym : '❓');
+        btn.style.cssText = 'width:68px;height:68px;padding:0;font-size:26px';
+        btn.onclick = () => {
+          if (matched.includes(idx) || first === idx) return;
+          if (first === null) {
+            first = idx;
+          } else {
+            if (CARDS[first] === sym) matched.push(first, idx);
+            first = null;
+          }
+          render();
+        };
+        wrap.append(btn);
+      });
+      status.textContent = matched.length === CARDS.length ? '🎉 Alle Paare gefunden!' : `Paare gefunden: ${matched.length / 2}/${CARDS.length / 2}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 48. TIC-TAC-TOE
+// ==========================================
+registerGame({
+  id: 'tic-tac-toe',
+  title: 'Tic-Tac-Toe',
+  icon: '❌',
+  cat: 'Brettspiele',
+  desc: 'Setze ❌ oder ⭕ – dein aktuelles Brett bleibt gespeichert.',
+  run({ body, status }) {
+    const saved = loadGameProgress('tic-tac-toe', { board: Array(9).fill(''), turn: '❌' });
+    let board = Array.isArray(saved.board) && saved.board.length === 9 ? [...saved.board] : Array(9).fill('');
+    let turn = saved.turn === '⭕' ? '⭕' : '❌';
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const grid = $('div', null, '');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,68px);gap:8px';
+    const clrBtn = $('button', 'sz-btn sz-btn-ghost', 'Neues Feld');
+    wrap.append(grid, clrBtn);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('tic-tac-toe', { board, turn });
+      grid.innerHTML = '';
+      board.forEach((val, idx) => {
+        const btn = $('button', 'sz-btn sz-btn-primary', val || '·');
+        btn.style.cssText = 'width:68px;height:68px;padding:0;font-size:24px';
+        btn.onclick = () => {
+          if (!board[idx]) { board[idx] = turn; turn = turn === '❌' ? '⭕' : '❌'; render(); }
+        };
+        grid.append(btn);
+      });
+      status.textContent = `Am Zug: ${turn}`;
+    };
+
+    clrBtn.onclick = () => { board = Array(9).fill(''); turn = '❌'; render(); };
+    render();
+  }
+});
+
+// ==========================================
+// 49. CONNECT FOUR
+// ==========================================
+registerGame({
+  id: 'connect-four',
+  title: 'Connect Four',
+  icon: '🔴',
+  cat: 'Brettspiele',
+  desc: 'Wirf farbige Steine in 4 Spalten ein – der Stand bleibt gespeichert.',
+  run({ body, status }) {
+    const saved = loadGameProgress('connect-four', { cols: [[], [], [], []], redTurn: true });
+    let cols = Array.isArray(saved.cols) && saved.cols.length === 4 ? saved.cols.map((c) => [...c]) : [[], [], [], []];
+    let redTurn = !!saved.redTurn;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('connect-four', { cols, redTurn });
+      wrap.innerHTML = '';
+      cols.forEach((col, cIdx) => {
+        const btn = $('button', 'sz-btn sz-btn-ghost', `Spalte ${cIdx + 1}\n${col.join(' ') || 'leer'}`);
+        btn.style.cssText = 'min-width:86px;min-height:92px;white-space:pre-line;font-size:15px';
+        btn.onclick = () => {
+          if (col.length < 4) { col.push(redTurn ? '🔴' : '🟡'); redTurn = !redTurn; render(); }
+        };
+        wrap.append(btn);
+      });
+      status.textContent = `Nächster Stein: ${redTurn ? '🔴 Rot' : '🟡 Gelb'}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 50. BUNTE FORMEN EINSETZEN
+// ==========================================
+registerGame({
+  id: 'bunte-formen-einsetzen',
+  title: 'Bunte Formen einsetzen',
+  icon: '🔷',
+  cat: 'Puzzle',
+  desc: 'Wähle eine Form aus der Ablage und setze sie in das passende Feld ein.',
+  run({ body, status }) {
+    const SHAPES = ['🔺', '🔷', '🟣'];
+    const saved = loadGameProgress('bunte-formen-einsetzen', { slots: ['', '', '', '', '', ''] });
+    let slots = Array.isArray(saved.slots) && saved.slots.length === 6 ? [...saved.slots] : ['', '', '', '', '', ''];
+    let picked = 0;
+
+    const wrap = $('div', 'sz-sh-wrap');
+    const board = $('div', 'sz-sh-board');
+    const tray = $('div', 'sz-sh-tray');
+    wrap.append(board, tray);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('bunte-formen-einsetzen', { slots });
+      board.innerHTML = '';
+      slots.forEach((val, idx) => {
+        const cell = $('button', 'sz-sh-slot', val || '⬜');
+        cell.onclick = () => { slots[idx] = val === SHAPES[picked] ? '' : SHAPES[picked]; render(); };
+        board.append(cell);
+      });
+
+      tray.innerHTML = '';
+      SHAPES.forEach((sh, idx) => {
+        const pBtn = $('button', 'sz-sh-piece' + (picked === idx ? ' sel' : ''), sh);
+        pBtn.onclick = () => { picked = idx; render(); };
+        tray.append(pBtn);
+      });
+
+      const placed = slots.filter(Boolean).length;
+      status.textContent = `Eingesetzte Formen (gespeichert): ${placed}/6 · Aktiv: ${SHAPES[picked]}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 51. SCHACH
+// ==========================================
+registerGame({
+  id: 'schach',
+  title: 'Schach',
+  icon: '♟️',
+  cat: 'Brettspiele',
+  desc: 'Wähle eine Figur und setze sie auf ein Zielfeld – dein Brettstand bleibt gespeichert.',
+  run({ body, status }) {
+    const INIT = [
+      ['♜', '♞', '♝', '♛', '♚', '♝', '♞', '♜'],
+      ['♟', '♟', '♟', '♟', '♟', '♟', '♟', '♟'],
+      ['', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['♙', '♙', '♙', '♙', '♙', '♙', '♙', '♙'],
+      ['♖', '♘', '♗', '♕', '♔', '♗', '♘', '♖']
+    ];
+    const saved = loadGameProgress('schach', { board: INIT });
+    let board = Array.isArray(saved.board) && saved.board.length === 8 ? saved.board.map((r) => [...r]) : INIT.map((r) => [...r]);
+    let sel = null, moves = 0;
+
+    const wrap = $('div', 'sz-ck-grid');
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('schach', { board });
+      wrap.innerHTML = '';
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        const isDark = (r + c) % 2 === 1;
+        const isSel = sel && sel[0] === r && sel[1] === c;
+        const piece = board[r][c];
+        const cell = $('button', 'sz-ck-cell ' + (isDark ? 'dark' : 'light') + (isSel ? ' sel' : ''), piece);
+        cell.onclick = () => {
+          if (!sel) {
+            if (piece) { sel = [r, c]; status.textContent = `Figur ${piece} gewählt – Zielfeld antippen`; render(); }
+          } else {
+            const [sr, sc] = sel;
+            if (sr === r && sc === c) { sel = null; status.textContent = 'Auswahl aufgehoben'; render(); return; }
+            board[r][c] = board[sr][sc];
+            board[sr][sc] = '';
+            sel = null;
+            moves++;
+            status.textContent = `Züge: ${moves} · Stand gespeichert`;
+            render();
+          }
+        };
+        wrap.append(cell);
+      }
+    };
+
+    status.textContent = 'Figur wählen und auf ein Feld ziehen (Stand gespeichert)';
+    render();
+  }
+});
+
+// ==========================================
+// 52. MÜHLE
+// ==========================================
+registerGame({
+  id: 'muehle',
+  title: 'Mühle',
+  icon: '⭕',
+  cat: 'Brettspiele',
+  desc: 'Setze Steine auf das 3×3-Mühlenfeld – jede 3er-Reihe bringt einen Punkt und wird gespeichert.',
+  run({ body, status }) {
+    const saved = loadGameProgress('muehle', { cells: Array(9).fill(''), turn: '🔵', score: 0 });
+    let cells = Array.isArray(saved.cells) && saved.cells.length === 9 ? [...saved.cells] : Array(9).fill('');
+    let turn = saved.turn === '🟠' ? '🟠' : '🔵';
+    let score = saved.score || 0;
+    const LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px';
+    const grid = $('div', null, '');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,68px);gap:8px';
+    const clrBtn = $('button', 'sz-btn sz-btn-ghost', 'Feld leeren');
+    wrap.append(grid, clrBtn);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('muehle', { cells, turn, score });
+      grid.innerHTML = '';
+      cells.forEach((v, idx) => {
+        const btn = $('button', 'sz-btn sz-btn-primary', v || '·');
+        btn.style.cssText = 'width:68px;height:68px;padding:0;font-size:24px';
+        btn.onclick = () => {
+          if (cells[idx]) return;
+          cells[idx] = turn;
+          const formed = LINES.some(([a, b, c]) => cells[a] === turn && cells[b] === turn && cells[c] === turn);
+          if (formed) score++;
+          turn = turn === '🔵' ? '🟠' : '🔵';
+          render();
+          if (formed) status.textContent = `🏆 Mühle gebildet! Punkte: ${score} · Am Zug: ${turn}`;
+        };
+        grid.append(btn);
+      });
+      if (!status.textContent.includes('Mühle gebildet!')) status.textContent = `Punkte: ${score} · Am Zug: ${turn}`;
+    };
+
+    clrBtn.onclick = () => { cells = Array(9).fill(''); turn = '🔵'; render(); };
+    render();
+  }
+});
+
+// ==========================================
+// 53. UNO
+// ==========================================
+registerGame({
+  id: 'uno',
+  title: 'Uno',
+  icon: '🎴',
+  cat: 'Karten & Strategie',
+  desc: 'Lege eine Karte mit passender Farbe oder Zahl auf den Ablagestapel oder ziehe nach.',
+  run({ body, status }) {
+    const COLORS = ['🔴', '🔵', '🟢', '🟡'];
+    const randCard = () => ({ c: COLORS[R(COLORS.length)], n: 1 + R(9) });
+    const saved = loadGameProgress('uno', { top: randCard(), hand: Array.from({ length: 5 }, randCard), wins: 0 });
+    let top = saved.top || randCard();
+    let hand = Array.isArray(saved.hand) && saved.hand.length ? saved.hand : Array.from({ length: 5 }, randCard);
+    let wins = saved.wins || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:620px';
+    const topEl = $('div', null, '');
+    topEl.style.cssText = 'padding:12px 18px;border-radius:14px;background:var(--sz-surface-2);font-size:22px;font-weight:900';
+    const handEl = $('div', 'sz-pk-hand');
+    const drawBtn = $('button', 'sz-btn sz-btn-ghost', '🃏 Karte ziehen');
+    wrap.append(topEl, handEl, drawBtn);
+    body.append(wrap);
+
+    const save = () => saveGameProgress('uno', { top, hand, wins });
+
+    const render = () => {
+      save();
+      topEl.textContent = `Ablage: ${top.c} ${top.n}`;
+      handEl.innerHTML = '';
+      hand.forEach((card, idx) => {
+        const btn = $('button', 'sz-pk-card', `<span>${card.c}</span><span style="font-size:20px">${card.n}</span>`);
+        btn.onclick = () => {
+          if (card.c === top.c || card.n === top.n) {
+            top = card;
+            hand.splice(idx, 1);
+            if (!hand.length) { wins++; hand = Array.from({ length: 5 }, randCard); status.textContent = `🎉 Runde gewonnen! Siege: ${wins}`; }
+            else status.textContent = `✔ Karte abgelegt (${card.c} ${card.n}) · Hand: ${hand.length}`;
+            render();
+          } else {
+            status.textContent = `Passt nicht auf ${top.c} ${top.n} – gleiche Farbe oder Zahl wählen`;
+          }
+        };
+        handEl.append(btn);
+      });
+    };
+
+    drawBtn.onclick = () => { hand.push(randCard()); render(); status.textContent = `Karte gezogen · Hand: ${hand.length} · Siege: ${wins}`; };
+    render();
+  }
+});
+
+// ==========================================
+// 54. STADT, LAND, FLUSS
+// ==========================================
+registerGame({
+  id: 'stadt-land-fluss',
+  title: 'Stadt, Land, Fluss',
+  icon: '🗺️',
+  cat: 'Partyspiele',
+  desc: 'Ziehe einen Anfangsbuchstaben, trage Begriffe für Stadt, Land und Fluss ein und sichere Punkte.',
+  run({ body, status }) {
+    const LETTERS = 'ABCDEFGHKLMNOPRSTW';
+    const saved = loadGameProgress('stadt-land-fluss', { letter: 'B', city: '', country: '', river: '', score: 0 });
+    let letter = saved.letter || 'B';
+    let city = saved.city || '', country = saved.country || '', river = saved.river || '', score = saved.score || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;width:100%;max-width:460px';
+    const head = $('div', null, `Buchstabe: <strong>${letter}</strong>`);
+    head.style.cssText = 'font-size:20px;text-align:center';
+
+    const makeInput = (ph, val, onChg) => {
+      const inp = $('input', 'sz-search', '');
+      inp.placeholder = ph; inp.value = val; inp.style.width = '100%';
+      inp.oninput = () => { onChg(inp.value); saveGameProgress('stadt-land-fluss', { letter, city, country, river, score }); };
+      return inp;
+    };
+
+    const iCity = makeInput('Stadt…', city, (v) => { city = v; });
+    const iCountry = makeInput('Land…', country, (v) => { country = v; });
+    const iRiver = makeInput('Fluss…', river, (v) => { river = v; });
+
+    const row = $('div', null, '');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap';
+    const scoreBtn = $('button', 'sz-btn sz-btn-primary', 'Runde werten (+10)');
+    const newLetterBtn = $('button', 'sz-btn sz-btn-ghost', '🎲 Neuer Buchstabe');
+    row.append(scoreBtn, newLetterBtn);
+    wrap.append(head, iCity, iCountry, iRiver, row);
+    body.append(wrap);
+
+    const syncStatus = () => { saveGameProgress('stadt-land-fluss', { letter, city, country, river, score }); status.textContent = `Punkte: ${score} · Buchstabe: ${letter}`; };
+
+    scoreBtn.onclick = () => {
+      const filled = [city, country, river].filter((x) => x.trim().length > 0).length;
+      score += filled * 10;
+      syncStatus();
+    };
+
+    newLetterBtn.onclick = () => {
+      letter = LETTERS[R(LETTERS.length)];
+      city = ''; country = ''; river = '';
+      iCity.value = ''; iCountry.value = ''; iRiver.value = '';
+      head.innerHTML = `Buchstabe: <strong>${letter}</strong>`;
+      syncStatus();
+    };
+
+    syncStatus();
+  }
+});
+
+// ==========================================
+// 55. TABU
+// ==========================================
+registerGame({
+  id: 'tabu',
+  title: 'Tabu',
+  icon: '🚫',
+  cat: 'Partyspiele',
+  desc: 'Erkläre oder errate den Zielbegriff, ohne die Tabuwörter zu nutzen.',
+  run({ body, status }) {
+    const DECK = [
+      { word: 'REGENBOGEN', tabu: ['Farben', 'Himmel', 'Regen', 'Sonne'] },
+      { word: 'PIZZA', tabu: ['Italien', 'Käse', 'Ofen', 'Teig'] },
+      { word: 'RAKETE', tabu: ['Weltall', 'Mond', 'Fliegen', 'Start'] },
+      { word: 'SCHLÜSSEL', tabu: ['Tür', 'Schloss', 'Aufschließen', 'Metall'] }
+    ];
+    const saved = loadGameProgress('tabu', { idx: 0, pts: 0 });
+    let idx = saved.idx || 0, pts = saved.pts || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:440px;text-align:center';
+    const card = $('div', null, '');
+    card.style.cssText = 'padding:18px;border-radius:16px;background:var(--sz-surface-2);width:100%';
+    const btns = $('div', null, '');
+    btns.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    const hitBtn = $('button', 'sz-btn sz-btn-lime', '✔ Erraten (+1)');
+    const tabuBtn = $('button', 'sz-btn sz-btn-ghost', '🚫 Tabu-Wort');
+    btns.append(hitBtn, tabuBtn);
+    wrap.append(card, btns);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('tabu', { idx, pts });
+      const item = DECK[idx % DECK.length];
+      card.innerHTML = `<div style="font-size:24px;font-weight:900;margin-bottom:8px">${item.word}</div><div style="color:var(--sz-muted)">Tabu: ${item.tabu.join(' · ')}</div>`;
+      status.textContent = `Punkte: ${pts} · Karte ${(idx % DECK.length) + 1}/${DECK.length}`;
+    };
+
+    hitBtn.onclick = () => { pts++; idx++; render(); };
+    tabuBtn.onclick = () => { idx++; render(); };
+    render();
+  }
+});
+
+// ==========================================
+// 56. SCHARADE
+// ==========================================
+registerGame({
+  id: 'scharade',
+  title: 'Scharade',
+  icon: '🎭',
+  cat: 'Partyspiele',
+  desc: 'Ziehe Begriffe zum Darstellen ohne Worte und speichere deine gelösten Runden.',
+  run({ body, status }) {
+    const PROMPTS = ['Eis essen', 'Tauchen', 'Gitarre spielen', 'Zug verpassen', 'Berg besteigen'];
+    const saved = loadGameProgress('scharade', { idx: 0, solved: 0 });
+    let idx = saved.idx || 0, solved = saved.solved || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center';
+    const box = $('div', null, '');
+    box.style.cssText = 'padding:20px 26px;border-radius:16px;background:var(--sz-surface-2);font-size:22px;font-weight:900';
+    const doneBtn = $('button', 'sz-btn sz-btn-primary', '✔ Gelöst & Nächster');
+    wrap.append(box, doneBtn);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('scharade', { idx, solved });
+      box.textContent = PROMPTS[idx % PROMPTS.length];
+      status.textContent = `Gelöst: ${solved} · Begriff ${(idx % PROMPTS.length) + 1}`;
+    };
+
+    doneBtn.onclick = () => { solved++; idx++; render(); };
+    render();
+  }
+});
+
+// ==========================================
+// 57. WERWOLF
+// ==========================================
+registerGame({
+  id: 'werwolf',
+  title: 'Werwolf',
+  icon: '🐺',
+  cat: 'Partyspiele',
+  desc: 'Führe durch Tag- und Nachtrunden und speichere den aktuellen Rundenstand.',
+  run({ body, status }) {
+    const ROLES = ['🐺 Werwolf', '🛡️ Seherin/Schutz', '🧑‍🌾 Dorfbewohner', '🔮 Hexe'];
+    const saved = loadGameProgress('werwolf', { day: 1, roleIdx: 0 });
+    let day = saved.day || 1, roleIdx = saved.roleIdx || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center';
+    const info = $('div', null, '');
+    info.style.cssText = 'padding:18px;border-radius:16px;background:var(--sz-surface-2);font-size:20px;font-weight:800';
+    const btns = $('div', null, '');
+    btns.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    const roleBtn = $('button', 'sz-btn sz-btn-ghost', '🎭 Rolle wechseln');
+    const nextDayBtn = $('button', 'sz-btn sz-btn-primary', '🌙/☀️ Nächste Runde');
+    btns.append(roleBtn, nextDayBtn);
+    wrap.append(info, btns);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('werwolf', { day, roleIdx });
+      info.textContent = `Tag ${day} · Deine Rolle: ${ROLES[roleIdx % ROLES.length]}`;
+      status.textContent = `Runde ${day} gespeichert`;
+    };
+
+    roleBtn.onclick = () => { roleIdx++; render(); };
+    nextDayBtn.onclick = () => { day++; render(); };
+    render();
+  }
+});
+
+// ==========================================
+// 58. QUARTETT
+// ==========================================
+registerGame({
+  id: 'quartett',
+  title: 'Quartett',
+  icon: '🏎️',
+  cat: 'Karten & Strategie',
+  desc: 'Vergleiche deinen Wert (PS) gegen den Gegner und sammle gewonnene Stiche.',
+  run({ body, status }) {
+    const CARS = [
+      { name: 'Volt GT', ps: 420 },
+      { name: 'Nebula EV', ps: 510 },
+      { name: 'Pulse RS', ps: 360 },
+      { name: 'Hyperion', ps: 640 }
+    ];
+    const saved = loadGameProgress('quartett', { idx: 0, wins: 0 });
+    let idx = saved.idx || 0, wins = saved.wins || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center';
+    const card = $('div', null, '');
+    card.style.cssText = 'padding:18px;border-radius:16px;background:var(--sz-surface-2);min-width:240px;font-size:19px;font-weight:800';
+    const playBtn = $('button', 'sz-btn sz-btn-primary', '⚡ Mit PS antreten');
+    wrap.append(card, playBtn);
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('quartett', { idx, wins });
+      const mine = CARS[idx % CARS.length];
+      card.innerHTML = `<div>${mine.name}</div><div style="color:#a3e635;margin-top:6px">${mine.ps} PS</div>`;
+      status.textContent = `Gewonnene Stiche: ${wins}`;
+    };
+
+    playBtn.onclick = () => {
+      const mine = CARS[idx % CARS.length];
+      const foe = CARS[(idx + 1) % CARS.length];
+      if (mine.ps >= foe.ps) {
+        wins++;
+        status.textContent = `🏆 ${mine.name} (${mine.ps} PS) schlägt ${foe.name} (${foe.ps} PS) · Stiche: ${wins}`;
+      } else {
+        status.textContent = `✖ ${foe.name} (${foe.ps} PS) hat mehr PS als ${mine.name} (${mine.ps} PS) · Stiche: ${wins}`;
+      }
+      idx++;
+      render();
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 59. SCHIFFE VERSENKEN
+// ==========================================
+registerGame({
+  id: 'schiffe-versenken',
+  title: 'Schiffe versenken',
+  icon: '🚢',
+  cat: 'Strategie',
+  desc: 'Beschieße das 4×4-Feld – Treffer (💥) und Wasser (🌊) bleiben gespeichert.',
+  run({ body, status }) {
+    const SHIPS = [1, 2, 5, 10];
+    const saved = loadGameProgress('schiffe-versenken', { shots: [] });
+    let shots = Array.isArray(saved.shots) ? [...saved.shots] : [];
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(4,58px);gap:8px';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('schiffe-versenken', { shots });
+      wrap.innerHTML = '';
+      for (let i = 0; i < 16; i++) {
+        const hitShot = shots.includes(i);
+        const isShip = SHIPS.includes(i);
+        const lbl = hitShot ? (isShip ? '💥' : '🌊') : '·';
+        const btn = $('button', 'sz-btn ' + (hitShot ? 'sz-btn-ghost' : 'sz-btn-primary'), lbl);
+        btn.style.cssText = 'width:58px;height:58px;padding:0;font-size:20px';
+        btn.onclick = () => {
+          if (!shots.includes(i)) { shots.push(i); render(); }
+        };
+        wrap.append(btn);
+      }
+      const hits = shots.filter((s) => SHIPS.includes(s)).length;
+      status.textContent = `Treffer: ${hits}/${SHIPS.length} · Schüsse: ${shots.length}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 60. ZAHLENRATEN
+// ==========================================
+registerGame({
+  id: 'zahlenraten',
+  title: 'Zahlenraten',
+  icon: '🎯',
+  cat: 'Puzzle',
+  desc: 'Rate die Geheimzahl zwischen 1 und 10 – Siege und Versuche bleiben gespeichert.',
+  run({ body, status }) {
+    const SECRET = 7;
+    const saved = loadGameProgress('zahlenraten', { wins: 0, tries: 0 });
+    let wins = saved.wins || 0, tries = saved.tries || 0;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;max-width:340px;justify-content:center';
+    body.append(wrap);
+
+    const sync = (msg) => {
+      saveGameProgress('zahlenraten', { wins, tries });
+      status.textContent = `${msg} · Siege: ${wins} · Versuche: ${tries}`;
+    };
+
+    for (let n = 1; n <= 10; n++) {
+      const btn = $('button', 'sz-btn sz-btn-primary', String(n));
+      btn.style.cssText = 'width:56px;height:48px;padding:0;font-weight:900';
+      btn.onclick = () => {
+        tries++;
+        if (n === SECRET) { wins++; sync(`🎯 Treffer (${n})!`); }
+        else if (n < SECRET) sync(`⬆ Zu niedrig (${n})`);
+        else sync(`⬇ Zu hoch (${n})`);
+      };
+      wrap.append(btn);
+    }
+
+    sync('Wähle eine Zahl von 1 bis 10');
+  }
+});
+
+// ==========================================
+// 61. DRIFT BOSS
+// ==========================================
+registerGame({
+  id: 'drift-boss',
+  title: 'Drift Boss',
+  icon: '🛞',
+  cat: 'Action',
+  desc: 'Halte gedrückt (Maus, Finger oder Leertaste), um nach rechts zu driften, und lass los für links – bleib auf der Bahn und speichere deinen Rekord.',
+  run({ body, status }) {
+    const { trackRaf, on, bindKeys } = makeArcadeCanvasRuntime();
+    const saved = loadGameProgress('drift-boss', { best: 0 });
+    let best = saved.best || 0;
+
+    const W = 400, H = 360;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let x = W / 2, y = H - 70, score = 0, over = false, driftRight = false, tick = 0;
+
+    const reset = () => {
+      x = W / 2; y = H - 70; score = 0; over = false; driftRight = false; tick = 0;
+      status.textContent = `Punkte: 0 · Rekord: ${best} · Gedrückt halten = Rechts`;
+    };
+
+    const down = () => { if (over) reset(); else driftRight = true; };
+    const up = () => { driftRight = false; };
+
+    cv.onpointerdown = down;
+    on(window, 'pointerup', up);
+    bindKeys([' ', 'ArrowRight', 'd'], (e, firstPress) => {
+      if (e.type === 'keydown' && firstPress) down();
+      if (e.type === 'keyup') up();
+    });
+
+    const loop = () => {
+      if (!over) {
+        tick++;
+        const centerX = W / 2 + Math.sin(tick * 0.04) * 95;
+        const halfRoad = 68;
+        x += driftRight ? 3.2 : -3.2;
+
+        if (tick % 25 === 0) {
+          score++;
+          if (score > best) best = score;
+          saveGameProgress('drift-boss', { best });
+          status.textContent = `Punkte: ${score} · Rekord: ${best}`;
+        }
+
+        if (Math.abs(x - centerX) > halfRoad) {
+          over = true;
+          status.textContent = `💥 Abgedriftet! Punkte: ${score} · Rekord: ${best} · Tippen für Neustart`;
+        }
+
+        ctx.fillStyle = '#0c0918';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#2b2154';
+        ctx.fillRect(centerX - halfRoad, 0, halfRoad * 2, H);
+
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
+      }
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    reset();
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 62. SMASH KARTS
+// ==========================================
+registerGame({
+  id: 'smash-karts',
+  title: 'Smash Karts',
+  icon: '🏎️',
+  cat: 'Action',
+  desc: 'Steuere dein Kart in der Arena und feuere Schüsse auf Ziel-Karts, um Punkte zu sammeln.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const saved = loadGameProgress('smash-karts', { ko: 0 });
+    let ko = saved.ko || 0;
+
+    const W = 480, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let kx = 110, ky = H / 2, tx = W - 100, ty = H / 2, bolts = [];
+    const shoot = () => bolts.push({ x: kx + 18, y: ky, vx: 7.5 });
+
+    cv.onpointerdown = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const px = ((e.clientX - rect.left) / rect.width) * W;
+      const py = ((e.clientY - rect.top) / rect.height) * H;
+      if (px > kx + 50) shoot();
+      else { kx = Math.max(24, Math.min(W - 24, px)); ky = Math.max(24, Math.min(H - 24, py)); }
+    };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', 'ArrowUp', 'w', 'ArrowDown', 's', ' '], (e, firstPress) => {
+      if (e.key === ' ' && e.type === 'keydown' && firstPress) shoot();
+    });
+
+    const loop = () => {
+      if (keys.ArrowLeft || keys.a) kx = Math.max(24, kx - 4.5);
+      if (keys.ArrowRight || keys.d) kx = Math.min(W - 24, kx + 4.5);
+      if (keys.ArrowUp || keys.w) ky = Math.max(24, ky - 4.5);
+      if (keys.ArrowDown || keys.s) ky = Math.min(H - 24, ky + 4.5);
+
+      ty = H / 2 + Math.cos(performance.now() * 0.0024) * 95;
+
+      for (let i = bolts.length - 1; i >= 0; i--) {
+        const b = bolts[i];
+        b.x += b.vx;
+        if (Math.hypot(b.x - tx, b.y - ty) < 22) {
+          ko++;
+          saveGameProgress('smash-karts', { ko });
+          status.textContent = `💥 Kart getroffen! K.O.s: ${ko}`;
+          bolts.splice(i, 1);
+          continue;
+        }
+        if (b.x > W + 20) bolts.splice(i, 1);
+      }
+
+      ctx.fillStyle = '#121829';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#facc15';
+      bolts.forEach((b) => { ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill(); });
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath(); ctx.arc(kx, ky, 15, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath(); ctx.arc(tx, ty, 16, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `K.O.s: ${ko} · Leertaste oder rechts tippen zum Feuern`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 63. PAPER.IO 2
+// ==========================================
+registerGame({
+  id: 'paper-io-2',
+  title: 'Paper.io 2',
+  icon: '🟩',
+  cat: 'Action',
+  desc: 'Tippe auf Felder, um grünes Gebiet zu erobern und deinen Fortschritt zu sichern.',
+  run({ body, status }) {
+    const N = 6;
+    const saved = loadGameProgress('paper-io-2', { owned: [0, 1, 6, 7] });
+    let owned = Array.isArray(saved.owned) && saved.owned.length ? [...saved.owned] : [0, 1, 6, 7];
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = `display:grid;grid-template-columns:repeat(${N},46px);gap:6px`;
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('paper-io-2', { owned });
+      wrap.innerHTML = '';
+      for (let i = 0; i < N * N; i++) {
+        const isMine = owned.includes(i);
+        const btn = $('button', 'sz-btn ' + (isMine ? 'sz-btn-lime' : 'sz-btn-ghost'), isMine ? '🟩' : '·');
+        btn.style.cssText = 'width:46px;height:46px;padding:0;font-size:18px';
+        btn.onclick = () => { if (!owned.includes(i)) { owned.push(i); render(); } };
+        wrap.append(btn);
+      }
+      status.textContent = `Erobert: ${owned.length}/${N * N} Felder (gespeichert)`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 64. STATE.IO
+// ==========================================
+registerGame({
+  id: 'state-io',
+  title: 'State.io',
+  icon: '🚩',
+  cat: 'Strategie',
+  desc: 'Wähle eine eigene Zone (🟦) und klicke auf ein Ziel, um es zu übernehmen.',
+  run({ body, status }) {
+    const saved = loadGameProgress('state-io', { zones: ['player', 'neutral', 'enemy', 'neutral'] });
+    let zones = Array.isArray(saved.zones) && saved.zones.length === 4 ? [...saved.zones] : ['player', 'neutral', 'enemy', 'neutral'];
+    let picked = null;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(2,120px);gap:12px';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('state-io', { zones });
+      wrap.innerHTML = '';
+      zones.forEach((owner, idx) => {
+        const ico = owner === 'player' ? '🟦 Eigen' : owner === 'enemy' ? '🟥 Gegner' : '⬜ Frei';
+        const btn = $('button', 'sz-btn ' + (picked === idx ? 'sz-btn-lime' : 'sz-btn-primary'), `Zone ${idx + 1}\n${ico}`);
+        btn.style.cssText = 'height:76px;white-space:pre-line;font-size:14px';
+        btn.onclick = () => {
+          if (picked === null) { if (owner === 'player') { picked = idx; render(); } }
+          else if (picked !== idx) { zones[idx] = 'player'; picked = null; render(); }
+          else { picked = null; render(); }
+        };
+        wrap.append(btn);
+      });
+      const mine = zones.filter((z) => z === 'player').length;
+      status.textContent = `Deine Zonen: ${mine}/4 · ${mine === 4 ? '🏆 Karte erobert!' : 'Eigene Zone wählen & Ziel erobern'}`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 65. HEXA SORT
+// ==========================================
+registerGame({
+  id: 'hexa-sort',
+  title: 'Hexa Sort',
+  icon: '⬡',
+  cat: 'Puzzle',
+  desc: 'Sortiere farbige Sechseck-Stapel durch Umlegen und sammle Punkte.',
+  run({ body, status }) {
+    const saved = loadGameProgress('hexa-sort', { stacks: [['🟣', '🟡'], ['🟡', '🟣'], ['🩵'], []], pts: 0 });
+    let stacks = Array.isArray(saved.stacks) && saved.stacks.length === 4 ? saved.stacks.map((s) => [...s]) : [['🟣', '🟡'], ['🟡', '🟣'], ['🩵'], []];
+    let pts = saved.pts || 0, sel = null;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    body.append(wrap);
+
+    const render = () => {
+      saveGameProgress('hexa-sort', { stacks, pts });
+      wrap.innerHTML = '';
+      stacks.forEach((st, idx) => {
+        const btn = $('button', 'sz-btn ' + (sel === idx ? 'sz-btn-lime' : 'sz-btn-ghost'), `Stapel ${idx + 1}\n${st.join(' ') || 'leer'}`);
+        btn.style.cssText = 'min-width:96px;min-height:84px;white-space:pre-line;font-size:15px';
+        btn.onclick = () => {
+          if (sel === null) { if (st.length) { sel = idx; render(); } }
+          else if (sel === idx) { sel = null; render(); }
+          else {
+            const mover = stacks[sel].pop();
+            if (mover) stacks[idx].push(mover);
+            if (stacks[idx].length >= 2 && stacks[idx].every((x) => x === stacks[idx][0])) pts += 25;
+            sel = null;
+            render();
+          }
+        };
+        wrap.append(btn);
+      });
+      status.textContent = `Punkte (gespeichert): ${pts} · Gleichfarbige Stapel bilden`;
+    };
+
+    render();
+  }
+});
+
+// ==========================================
+// 66. SNOWBALL RUSH
+// ==========================================
+registerGame({
+  id: 'snowball-rush',
+  title: 'Snowball Rush',
+  icon: '☃️',
+  cat: 'Action',
+  desc: 'Steuere deinen Schneeball nach links/rechts und weiche Hindernissen aus.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const saved = loadGameProgress('snowball-rush', { best: 0 });
+    let best = saved.best || 0;
+
+    const W = 400, H = 460;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let bx = W / 2, score = 0, over = false, rocks = [], tick = 0;
+
+    const reset = () => {
+      bx = W / 2; score = 0; over = false; rocks = []; tick = 0;
+      status.textContent = `Punkte: 0 · Rekord: ${best}`;
+    };
+
+    const setX = (clientX) => {
+      const rect = cv.getBoundingClientRect();
+      bx = Math.max(24, Math.min(W - 24, ((clientX - rect.left) / rect.width) * W));
+    };
+
+    cv.onpointerdown = (e) => {
+      if (over) { reset(); return; }
+      cv.setPointerCapture(e.pointerId);
+      setX(e.clientX);
+    };
+    cv.onpointermove = (e) => { if (!over && (e.buttons || e.pointerType === 'touch')) setX(e.clientX); };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', ' '], (e, firstPress) => {
+      if (over && e.key === ' ' && firstPress) reset();
+    });
+
+    const loop = () => {
+      if (!over) {
+        if (keys.ArrowLeft || keys.a) bx = Math.max(24, bx - 4.8);
+        if (keys.ArrowRight || keys.d) bx = Math.min(W - 24, bx + 4.8);
+
+        tick++;
+        if (tick % 48 === 1) rocks.push({ x: 36 + R(W - 72), y: -20, vy: 3.4 });
+
+        const by = H - 70, br = 14;
+        for (let i = rocks.length - 1; i >= 0; i--) {
+          const rk = rocks[i];
+          rk.y += rk.vy;
+          if (rk.y > by + br && !rk.passed) {
+            rk.passed = true;
+            score++;
+            if (score > best) { best = score; saveGameProgress('snowball-rush', { best }); }
+            status.textContent = `Punkte: ${score} · Rekord: ${best}`;
+          }
+          if (Math.hypot(rk.x - bx, rk.y - by) < br + 12) {
+            over = true;
+            status.textContent = `💥 Hindernis erwischt! Punkte: ${score} · Rekord: ${best} · Tippen für Neustart`;
+          }
+          if (rk.y > H + 30) rocks.splice(i, 1);
+        }
+      }
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#94a3b8';
+      rocks.forEach((rk) => { ctx.beginPath(); ctx.arc(rk.x, rk.y, 12, 0, Math.PI * 2); ctx.fill(); });
+      ctx.fillStyle = '#f8fafc';
+      ctx.beginPath(); ctx.arc(bx, H - 70, 14, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    reset();
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 67. RAGDOLL ARCHERS
+// ==========================================
+registerGame({
+  id: 'ragdoll-archers',
+  title: 'Ragdoll Archers',
+  icon: '🏹',
+  cat: 'Action',
+  desc: 'Stelle den Schusswinkel ein und schieße Pfeile auf das Ziel (Trefferbereich: 25°–45°).',
+  run({ body, status }) {
+    const saved = loadGameProgress('ragdoll-archers', { hits: 0, aim: 35 });
+    let hits = saved.hits || 0, aim = saved.aim ?? 35;
+
+    const wrap = $('div', null, '');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:440px';
+    const rng = $('input', null, '');
+    rng.type = 'range'; rng.min = '5'; rng.max = '75'; rng.value = String(aim);
+    const shotBtn = $('button', 'sz-btn sz-btn-primary', '🏹 Pfeil abschießen');
+    wrap.append(rng, shotBtn);
+    body.append(wrap);
+
+    const sync = (msg) => { saveGameProgress('ragdoll-archers', { hits, aim }); status.textContent = `${msg} · Treffer: ${hits} · Winkel: ${aim}°`; };
+
+    rng.oninput = () => { aim = Number(rng.value); sync('Winkel angepasst'); };
+    shotBtn.onclick = () => {
+      if (aim >= 25 && aim <= 45) { hits++; sync('🎯 Volltreffer!'); }
+      else sync('💨 Daneben – Ziel liegt bei 25°–45°');
+    };
+
+    sync('Bereit zum Schießen');
+  }
+});
+
+// ==========================================
+// 68. DIEP.IO
+// ==========================================
+registerGame({
+  id: 'diep-io',
+  title: 'Diep.io',
+  icon: '🎯',
+  cat: 'Action',
+  desc: 'Bewege deinen Panzer mit Finger/Maus oder WASD/Pfeiltasten und feuere auf Ziele.',
+  run({ body, status }) {
+    const { trackRaf, keys, bindKeys } = makeArcadeCanvasRuntime();
+    const saved = loadGameProgress('diep-io', { score: 0 });
+    let score = saved.score || 0;
+
+    const W = 480, H = 320;
+    const cv = $('canvas', 'sz-arc-cv');
+    cv.width = W; cv.height = H;
+    body.append(cv);
+    const ctx = cv.getContext('2d');
+
+    let tx = 100, ty = H / 2, gx = W - 110, gy = H / 2, shells = [];
+    const fire = () => shells.push({ x: tx + 22, y: ty, vx: 7.5 });
+
+    cv.onpointerdown = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const px = ((e.clientX - rect.left) / rect.width) * W;
+      const py = ((e.clientY - rect.top) / rect.height) * H;
+      if (px > tx + 50) fire();
+      else { tx = Math.max(24, Math.min(W - 24, px)); ty = Math.max(24, Math.min(H - 24, py)); }
+    };
+    bindKeys(['ArrowLeft', 'a', 'ArrowRight', 'd', 'ArrowUp', 'w', 'ArrowDown', 's', ' '], (e, firstPress) => {
+      if (e.key === ' ' && e.type === 'keydown' && firstPress) fire();
+    });
+
+    const loop = () => {
+      if (keys.ArrowLeft || keys.a) tx = Math.max(24, tx - 4.5);
+      if (keys.ArrowRight || keys.d) tx = Math.min(W - 24, tx + 4.5);
+      if (keys.ArrowUp || keys.w) ty = Math.max(24, ty - 4.5);
+      if (keys.ArrowDown || keys.s) ty = Math.min(H - 24, ty + 4.5);
+
+      gy = H / 2 + Math.sin(performance.now() * 0.0022) * 85;
+
+      for (let i = shells.length - 1; i >= 0; i--) {
+        const s = shells[i];
+        s.x += s.vx;
+        if (Math.hypot(s.x - gx, s.y - gy) < 24) {
+          score += 15;
+          saveGameProgress('diep-io', { score });
+          status.textContent = `💥 Ziel zerstört! Punkte: ${score}`;
+          shells.splice(i, 1);
+          continue;
+        }
+        if (s.x > W + 20) shells.splice(i, 1);
+      }
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fde047';
+      shells.forEach((s) => { ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2); ctx.fill(); });
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(tx, ty - 4, 22, 8);
+      ctx.beginPath(); ctx.arc(tx, ty, 15, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#facc15';
+      ctx.beginPath(); ctx.arc(gx, gy, 17, 0, Math.PI * 2); ctx.fill();
+
+      trackRaf(requestAnimationFrame(loop));
+    };
+
+    status.textContent = `Punkte: ${score} · Leertaste oder rechts tippen zum Schießen`;
+    trackRaf(requestAnimationFrame(loop));
+  }
+});
+
+// ==========================================
+// 69. MULTIPLAYER: KATEGORIE-BOMBE
+// ==========================================
+registerGame({
+  id: 'kategorie-bombe',
+  title: 'Kategorie-Bombe',
+  icon: '💣',
+  cat: 'Partyspiele',
+  desc: 'Es erscheint eine Kategorie (z. B. Automarke). Reihum oder gegenseitig einen Begriff nennen und die Bombe weitergeben – platzt sie bei dir, hast du verloren!',
+  run({ body, status }) {
+    const { later, cleanup } = makeRuntime();
+
+    const CATEGORIES = [
+      'Automarke', 'Tier', 'Land oder Hauptstadt', 'Film oder Serie', 'Getränk',
+      'Videospiel', 'Obst oder Gemüse', 'Beruf', 'Sportart', 'Musikband oder Künstler'
+    ];
+
+    const getPlayers = () => {
+      const p1 = (document.getElementById('sz-p1')?.value || '').trim() || 'Spieler 1';
+      const p2 = (document.getElementById('sz-p2')?.value || '').trim() || 'Spieler 2';
+      const rawGroup = (document.getElementById('sz-group')?.value || '').trim();
+      if (rawGroup) {
+        const list = rawGroup.split(',').map((s) => s.trim()).filter(Boolean);
+        if (list.length >= 2) return list;
+      }
+      return [p1, p2];
+    };
+
+    const players = getPlayers();
+    const saved = loadGameProgress('kategorie-bombe', { losses: {}, rounds: 0 });
+    let losses = typeof saved.losses === 'object' && saved.losses ? { ...saved.losses } : {};
+    let rounds = saved.rounds || 0;
+
+    let category = CATEGORIES[R(CATEGORIES.length)];
+    let turnIdx = 0, running = false, exploded = false, timeLeftMs = 0, tickPulse = false;
+
+    let audioCtx = null;
+    const playTick = (urgent) => {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!audioCtx) audioCtx = new Ctx();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = urgent ? 'sawtooth' : 'sine';
+        osc.frequency.value = urgent ? 760 : 440;
+        gain.gain.value = 0.04;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.05);
+      } catch (_) {}
+    };
+
+    const wrap = $('div', 'sz-kb-wrap');
+    const catBox = $('div', 'sz-kb-cat-box');
+    const catLabel = $('div', 'sz-kb-cat-label', 'Aktuelle Kategorie');
+    const catTitle = $('div', 'sz-kb-cat-title', category);
+    catBox.append(catLabel, catTitle);
+
+    const bombStage = $('div', 'sz-kb-bomb-stage');
+    const bombIco = $('div', 'sz-kb-bomb-ico', '💣');
+    const playerEl = $('div', 'sz-kb-player', players[turnIdx]);
+    const hintEl = $('div', 'sz-muted', 'Nenne einen passenden Begriff und gib die Bombe weiter!');
+    bombStage.append(bombIco, playerEl, hintEl);
+
+    const actions = $('div', 'sz-kb-actions');
+    const passBtn = $('button', 'sz-btn sz-btn-primary', '💣 Begriff gesagt → Weitergeben');
+    const newRoundBtn = $('button', 'sz-btn sz-btn-lime', '▶ Neue Kategorie & Start');
+    const catBtn = $('button', 'sz-btn sz-btn-ghost', '🎲 Nur Kategorie wechseln');
+    actions.append(passBtn, newRoundBtn, catBtn);
+
+    const scoresEl = $('div', 'sz-kb-scores');
+    wrap.append(catBox, bombStage, actions, scoresEl);
+    body.append(wrap);
+
+    const persist = () => saveGameProgress('kategorie-bombe', { losses, rounds });
+
+    const renderScores = () => {
+      scoresEl.innerHTML = '';
+      players.forEach((name) => {
+        const l = losses[name] || 0;
+        scoresEl.append($('span', 'sz-kb-chip', `${name}: ${l}× geplatzt`));
+      });
+      scoresEl.append($('span', 'sz-kb-chip', `Runden: ${rounds}`));
+    };
+
+    const renderState = () => {
+      const curPlayer = players[turnIdx % players.length];
+      catTitle.textContent = category;
+      playerEl.textContent = exploded ? `💥 BOOM! ${curPlayer} hat verloren!` : `Am Zug: ${curPlayer}`;
+      bombIco.textContent = exploded ? '💥' : '💣';
+      bombIco.classList.toggle('tick', tickPulse && !exploded);
+      bombStage.classList.toggle('danger', running && timeLeftMs < 2400);
+      passBtn.disabled = !running || exploded;
+      renderScores();
+    };
+
+    const scheduleCountdown = () => {
+      if (!running || exploded) return;
+      const stepMs = 450;
+      later(() => {
+        if (!running || exploded) return;
+        timeLeftMs -= stepMs;
+        tickPulse = !tickPulse;
+        playTick(timeLeftMs < 2400);
+
+        if (timeLeftMs <= 0) {
+          running = false;
+          exploded = true;
+          const loser = players[turnIdx % players.length];
+          losses[loser] = (losses[loser] || 0) + 1;
+          rounds++;
+          persist();
+          hintEl.textContent = 'Zeit abgelaufen – die Bombe ist geplatzt!';
+          status.textContent = `💥 ${loser} war dran, als die Bombe platzte!`;
+          renderState();
+          return;
+        }
+
+        renderState();
+        scheduleCountdown();
+      }, stepMs);
+    };
+
+    const startNewRound = () => {
+      cleanup();
+      category = CATEGORIES[R(CATEGORIES.length)];
+      turnIdx = R(players.length);
+      exploded = false;
+      running = true;
+      timeLeftMs = 5500 + R(4500);
+      rounds++;
+      persist();
+      hintEl.textContent = 'Schnell einen Begriff nennen und weitergeben!';
+      status.textContent = `Kategorie „${category}“ · ${players[turnIdx]} beginnt!`;
+      renderState();
+      scheduleCountdown();
+    };
+
+    passBtn.onclick = () => {
+      if (!running || exploded) return;
+      turnIdx = (turnIdx + 1) % players.length;
+      const nextName = players[turnIdx];
+      hintEl.textContent = `Weiter an ${nextName}!`;
+      status.textContent = `Bombe weitergegeben an ${nextName} · Kategorie: ${category}`;
+      renderState();
+    };
+
+    catBtn.onclick = () => {
+      category = CATEGORIES[R(CATEGORIES.length)];
+      renderState();
+      status.textContent = `Neue Kategorie: ${category}`;
+    };
+
+    newRoundBtn.onclick = startNewRound;
+    renderState();
+    status.textContent = `Kategorie „${category}“ · Drücke „Neue Kategorie & Start“ zum Loslegen`;
+  }
+});
+
+// ==========================================
+// 70–74. WEITERE 2, 3 UND 4 SPIELER PARTYSPIELE
+// ==========================================
+function getMultiplayerRoster(count = 4) {
+  const p1 = (document.getElementById('sz-p1')?.value || '').trim() || 'Spieler 1';
+  const p2 = (document.getElementById('sz-p2')?.value || '').trim() || 'Spieler 2';
+  const rawGroup = (document.getElementById('sz-group')?.value || '').trim();
+  const pool = [];
+
+  if (rawGroup) {
+    rawGroup.split(',').map((s) => s.trim()).filter(Boolean).forEach((n) => {
+      if (!pool.includes(n)) pool.push(n);
+    });
+  }
+  [p1, p2, 'Spieler 3', 'Spieler 4'].forEach((n) => {
+    if (!pool.includes(n)) pool.push(n);
+  });
+
+  return pool.slice(0, Math.max(2, Math.min(4, count)));
+}
+
+function buildPlayerCountSwitcher(initialCount, onChangeCount) {
+  const bar = $('div', 'sz-mp-bar');
+  bar.append($('span', 'sz-muted', 'Spielerzahl:'));
+  [2, 3, 4].forEach((n) => {
+    const btn = $('button', 'sz-btn ' + (n === initialCount ? 'sz-btn-primary' : 'sz-btn-ghost'), `${n}P`);
+    btn.style.padding = '5px 10px';
+    btn.style.fontSize = '12px';
+    btn.onclick = () => onChangeCount(n);
+    bar.append(btn);
+  });
+  return bar;
+}
+
+registerGame({
+  id: 'kofferpacken-mp',
+  title: 'Kofferpacken (2–4P)',
+  icon: '🧳',
+  cat: 'Partyspiele',
+  desc: 'Für 2, 3 oder 4 Spieler: Reihum einen neuen Gegenstand in den Koffer legen und alle bisherigen Dinge der Reihe nach nennen.',
+  run({ body, status }) {
+    const saved = loadGameProgress('kofferpacken-mp', { count: 3, scores: {}, items: ['Zahnbürste'] });
+    let count = saved.count || 3;
+    let scores = typeof saved.scores === 'object' && saved.scores ? { ...saved.scores } : {};
+    let items = Array.isArray(saved.items) && saved.items.length ? [...saved.items] : ['Zahnbürste'];
+    let turn = 0;
+
+    const wrap = $('div', 'sz-mp-wrap');
+    body.append(wrap);
+
+    const render = () => {
+      const players = getMultiplayerRoster(count);
+      const cur = players[turn % players.length];
+      saveGameProgress('kofferpacken-mp', { count, scores, items });
+      wrap.innerHTML = '';
+      wrap.append(buildPlayerCountSwitcher(count, (n) => { count = n; turn = 0; render(); }));
+
+      const board = $('div', 'sz-mp-board');
+      board.append(
+        $('div', 'sz-mp-active', `Am Zug: ${cur}`),
+        $('div', null, `Im Koffer (${items.length}): ${items.join(' · ')}`)
+      );
+
+      const input = $('input', 'sz-search', '');
+      input.placeholder = 'Neuer Gegenstand (z. B. Sonnenbrille)…';
+      input.style.width = '100%';
+
+      const btns = $('div', 'sz-mp-bar');
+      const okBtn = $('button', 'sz-btn sz-btn-lime', '✔ Richtig gesagt (+1)');
+      const failBtn = $('button', 'sz-btn sz-btn-ghost', '✖ Patzer (Andere +1)');
+      const clrBtn = $('button', 'sz-btn sz-btn-ghost', '🧳 Koffer leeren');
+
+      okBtn.onclick = () => {
+        const val = input.value.trim();
+        items.push(val || `Sache #${items.length + 1}`);
+        scores[cur] = (scores[cur] || 0) + 1;
+        turn = (turn + 1) % players.length;
+        render();
+      };
+      failBtn.onclick = () => {
+        players.forEach((p) => { if (p !== cur) scores[p] = (scores[p] || 0) + 1; });
+        items = ['Zahnbürste'];
+        turn = (turn + 1) % players.length;
+        render();
+      };
+      clrBtn.onclick = () => { items = ['Zahnbürste']; render(); };
+
+      btns.append(okBtn, failBtn, clrBtn);
+      board.append(input, btns);
+
+      const pills = $('div', 'sz-mp-list');
+      players.forEach((p, idx) => {
+        pills.append($('span', 'sz-mp-pill' + (idx === turn % players.length ? ' cur' : ''), `${p}: ${scores[p] || 0} Pkt`));
+      });
+
+      wrap.append(board, pills);
+      status.textContent = `${players.length} Spieler · ${cur} ist dran`;
+    };
+
     render();
   }
 });
 
 registerGame({
-  id: 'bundesstaaten-usa',
-  title: 'Bundesstaaten der USA lernen',
-  icon: '🇺🇸',
-  cat: 'Wissen & Quiz',
-  desc: 'Lerne US-Bundesstaaten, ihre Hauptstädte und Regionen.',
+  id: 'buzzer-duell-mp',
+  title: 'Buzzer-Duell (2–4P)',
+  icon: '🚨',
+  cat: 'Partyspiele',
+  desc: 'Für 2, 3 oder 4 Spieler: Wer zuerst die richtige Antwort ruft, bekommt über seinen Spieler-Buzzer den Punkt.',
   run({ body, status }) {
-    const STATES = [
-      { name: 'Kalifornien', abbr: 'CA', capital: 'Sacramento', region: 'Westen' },
-      { name: 'Texas', abbr: 'TX', capital: 'Austin', region: 'Süden' },
-      { name: 'New York', abbr: 'NY', capital: 'Albany', region: 'Nordosten' },
-      { name: 'Florida', abbr: 'FL', capital: 'Tallahassee', region: 'Süden' },
-      { name: 'Illinois', abbr: 'IL', capital: 'Springfield', region: 'Mittlerer Westen' },
-      { name: 'Washington', abbr: 'WA', capital: 'Olympia', region: 'Westen' },
-      { name: 'Colorado', abbr: 'CO', capital: 'Denver', region: 'Westen' },
-      { name: 'Massachusetts', abbr: 'MA', capital: 'Boston', region: 'Nordosten' },
-      { name: 'Arizona', abbr: 'AZ', capital: 'Phoenix', region: 'Westen' },
-      { name: 'Michigan', abbr: 'MI', capital: 'Lansing', region: 'Mittlerer Westen' },
-      { name: 'Georgia', abbr: 'GA', capital: 'Atlanta', region: 'Süden' },
-      { name: 'Ohio', abbr: 'OH', capital: 'Columbus', region: 'Mittlerer Westen' }
+    const PROMPTS = [
+      'Nenne schnell ein Land mit „A“!',
+      'Nenne ein Tier, das fliegen kann!',
+      'Nenne eine Farbe im Regenbogen!',
+      'Nenne ein Obst mit Kernen!',
+      'Nenne eine Sportart mit Ball!'
     ];
+    const saved = loadGameProgress('buzzer-duell-mp', { count: 4, scores: {}, idx: 0 });
+    let count = saved.count || 4;
+    let scores = typeof saved.scores === 'object' && saved.scores ? { ...saved.scores } : {};
+    let idx = saved.idx || 0;
 
-    let score = 0, round = 0, locked = false;
-    const wrap = $('div', null, '');
-    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:640px;text-align:center';
-
-    const badgeEl = $('div', 'sz-badge sz-badge-ready', '');
-    badgeEl.style.fontSize = '16px';
-    const qEl = $('h3', null, '');
-    qEl.style.margin = '0';
-    const optsEl = $('div', null, '');
-    optsEl.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:10px;width:100%';
-    const fbEl = $('p', null, '');
-    fbEl.style.cssText = 'min-height:24px;margin:0;font-weight:700';
-
-    wrap.append(badgeEl, qEl, optsEl, fbEl);
+    const wrap = $('div', 'sz-mp-wrap');
     body.append(wrap);
 
-    const nextQ = () => {
-      locked = false;
-      round++;
-      const target = STATES[R(STATES.length)];
-      const choices = [target];
-      while (choices.length < 4) {
-        const cand = STATES[R(STATES.length)];
-        if (!choices.includes(cand)) choices.push(cand);
-      }
-      choices.sort(() => Math.random() - 0.5);
+    const render = () => {
+      const players = getMultiplayerRoster(count);
+      saveGameProgress('buzzer-duell-mp', { count, scores, idx });
+      wrap.innerHTML = '';
+      wrap.append(buildPlayerCountSwitcher(count, (n) => { count = n; render(); }));
 
-      badgeEl.textContent = `Kürzel: ${target.abbr} · Region: ${target.region}`;
-      qEl.textContent = `Welcher Bundesstaat hat die Hauptstadt ${target.capital}?`;
-      fbEl.textContent = '';
-      optsEl.innerHTML = '';
+      const board = $('div', 'sz-mp-board');
+      board.append(
+        $('div', 'sz-mp-active', PROMPTS[idx % PROMPTS.length]),
+        $('div', 'sz-muted', 'Wer zuerst antwortet, tippt seinen Buzzer:')
+      );
 
-      choices.forEach((st) => {
-        const btn = $('button', 'sz-btn sz-btn-ghost', `${st.name} (${st.abbr})`);
-        btn.onclick = () => {
-          if (locked) return;
-          locked = true;
-          if (st.name === target.name) {
-            score++;
-            btn.className = 'sz-btn sz-btn-primary';
-            fbEl.textContent = `✔ Richtig! ${target.name} – Hauptstadt: ${target.capital} (${target.region}).`;
-          } else {
-            btn.style.background = '#991b1b';
-            fbEl.textContent = `✖ Gesucht war ${target.name} (Hauptstadt: ${target.capital}).`;
-          }
-          status.textContent = `Punkte: ${score} · Runde ${round}`;
-          setTimeout(nextQ, 1100);
-        };
-        optsEl.append(btn);
+      const buzzRow = $('div', 'sz-mp-bar');
+      players.forEach((p) => {
+        const b = $('button', 'sz-btn sz-btn-primary', `🚨 ${p} (${scores[p] || 0})`);
+        b.onclick = () => { scores[p] = (scores[p] || 0) + 1; idx++; render(); };
+        buzzRow.append(b);
       });
-      status.textContent = `Punkte: ${score} · Runde ${round}`;
+
+      const skipBtn = $('button', 'sz-btn sz-btn-ghost', '⏭ Nächste Aufgabe');
+      skipBtn.onclick = () => { idx++; render(); };
+
+      board.append(buzzRow, skipBtn);
+      wrap.append(board);
+      status.textContent = `Buzzer-Runde mit ${players.length} Spielern (Punkte gespeichert)`;
     };
 
-    nextQ();
+    render();
   }
 });
 
 registerGame({
-  id: 'groessenvergleich',
-  title: 'Größenvergleich (Dinge & Gebäude)',
-  icon: '🏙️',
-  cat: 'Wissen & Quiz',
-  desc: 'Schätze und vergleiche, welches Bauwerk oder Objekt höher bzw. größer ist.',
+  id: 'hoeher-tiefer-mp',
+  title: 'Höher oder Tiefer (2–4P)',
+  icon: '📈',
+  cat: 'Partyspiele',
+  desc: 'Für 2, 3 oder 4 Spieler: Schätze reihum, ob die nächste Zahl (1–100) höher oder tiefer als die aktuelle Zahl liegt.',
   run({ body, status }) {
-    const ITEMS = [
-      { name: 'Eiffelturm', h: '330 m', val: 330 },
-      { name: 'Burj Khalifa', h: '828 m', val: 828 },
-      { name: 'Freiheitsstatue (inkl. Sockel)', h: '93 m', val: 93 },
-      { name: 'Kölner Dom', h: '157 m', val: 157 },
-      { name: 'Cheops-Pyramide', h: '139 m', val: 139 },
-      { name: 'Berliner Fernsehturm', h: '368 m', val: 368 },
-      { name: 'Doppeldeckerbus', h: '4,4 m', val: 4.4 },
-      { name: 'Giraffe (ausgewachsen)', h: '5,5 m', val: 5.5 },
-      { name: 'Blauwal', h: '28 m (Länge)', val: 28 },
-      { name: 'Boing 747 (Länge)', h: '70,6 m', val: 70.6 }
-    ];
+    const saved = loadGameProgress('hoeher-tiefer-mp', { count: 3, scores: {}, curNum: 50, turn: 0 });
+    let count = saved.count || 3;
+    let scores = typeof saved.scores === 'object' && saved.scores ? { ...saved.scores } : {};
+    let curNum = saved.curNum ?? 50;
+    let turn = saved.turn || 0;
 
-    let score = 0, round = 0, locked = false;
-    const wrap = $('div', null, '');
-    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:640px;text-align:center';
-
-    const qEl = $('h3', null, 'Was ist höher / größer?');
-    qEl.style.margin = '0';
-    const pairEl = $('div', null, '');
-    pairEl.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:14px;width:100%';
-    const fbEl = $('p', null, '');
-    fbEl.style.cssText = 'min-height:24px;margin:0;font-weight:700';
-
-    wrap.append(qEl, pairEl, fbEl);
+    const wrap = $('div', 'sz-mp-wrap');
     body.append(wrap);
 
-    const nextPair = () => {
-      locked = false;
-      round++;
-      const a = ITEMS[R(ITEMS.length)];
-      let b = ITEMS[R(ITEMS.length)];
-      while (b.name === a.name) b = ITEMS[R(ITEMS.length)];
-      fbEl.textContent = '';
-      pairEl.innerHTML = '';
+    const render = () => {
+      const players = getMultiplayerRoster(count);
+      const actor = players[turn % players.length];
+      saveGameProgress('hoeher-tiefer-mp', { count, scores, curNum, turn });
+      wrap.innerHTML = '';
+      wrap.append(buildPlayerCountSwitcher(count, (n) => { count = n; turn = 0; render(); }));
 
-      [[a, b], [b, a]].forEach(([pick, other]) => {
-        const btn = $('button', 'sz-card', `
-          <div style="font-size:18px;font-weight:800">${pick.name}</div>
-          <div style="font-size:12px;color:var(--sz-muted)">Tippen zum Wählen</div>
-        `);
-        btn.onclick = () => {
-          if (locked) return;
-          locked = true;
-          if (pick.val >= other.val) {
-            score++;
-            btn.style.borderColor = '#22c55e';
-            fbEl.textContent = `✔ Richtig! ${pick.name} (${pick.h}) vs. ${other.name} (${other.h}).`;
-          } else {
-            btn.style.borderColor = '#ef4444';
-            fbEl.textContent = `✖ ${other.name} (${other.h}) ist größer als ${pick.name} (${pick.h}).`;
-          }
-          status.textContent = `Punkte: ${score} · Runde ${round}`;
-          setTimeout(nextPair, 1200);
-        };
-        pairEl.append(btn);
+      const board = $('div', 'sz-mp-board');
+      board.append(
+        $('div', 'sz-mp-active', `${actor} ist dran · Aktuelle Zahl: ${curNum}`),
+        $('div', 'sz-muted', 'Liegt die nächste Zahl (1–100) höher oder tiefer?')
+      );
+
+      const guess = (dir) => {
+        const nextNum = 1 + R(100);
+        const right = (dir === 'high' && nextNum >= curNum) || (dir === 'low' && nextNum <= curNum);
+        if (right) {
+          scores[actor] = (scores[actor] || 0) + 1;
+          status.textContent = `✔ ${actor} tippt richtig (${curNum} → ${nextNum})! +1 Punkt`;
+        } else {
+          status.textContent = `✖ ${actor} liegt daneben (${curNum} → ${nextNum})`;
+        }
+        curNum = nextNum;
+        turn = (turn + 1) % players.length;
+        render();
+      };
+
+      const row = $('div', 'sz-mp-bar');
+      const hiBtn = $('button', 'sz-btn sz-btn-lime', '⬆ Höher');
+      const loBtn = $('button', 'sz-btn sz-btn-primary', '⬇ Tiefer');
+      hiBtn.onclick = () => guess('high');
+      loBtn.onclick = () => guess('low');
+      row.append(hiBtn, loBtn);
+      board.append(row);
+
+      const pills = $('div', 'sz-mp-list');
+      players.forEach((p, i) => {
+        pills.append($('span', 'sz-mp-pill' + (i === turn % players.length ? ' cur' : ''), `${p}: ${scores[p] || 0}`));
       });
-      status.textContent = `Punkte: ${score} · Runde ${round}`;
+
+      wrap.append(board, pills);
     };
 
-    nextPair();
+    render();
   }
 });
 
-// ==========================================
-// 4. WEITERE WUNSCHLISTE (ROADMAP-KACHELN)
-// ==========================================
+registerGame({
+  id: 'blitz-rechnen-mp',
+  title: 'Blitz-Rechnen (2–4P)',
+  icon: '🧮',
+  cat: 'Partyspiele',
+  desc: 'Für 2, 3 oder 4 Spieler: Löst die Kopfrechen-Aufgabe und vergebt Punkte an den Schnellsten.',
+  run({ body, status }) {
+    const saved = loadGameProgress('blitz-rechnen-mp', { count: 4, scores: {} });
+    let count = saved.count || 4;
+    let scores = typeof saved.scores === 'object' && saved.scores ? { ...saved.scores } : {};
+    let a = 6 + R(14), b = 4 + R(12), showAns = false;
 
-const ROADMAP = [
-  ['Mahjong', '🀄', 'Puzzle', 'Kacheln paarweise freispielen.'],
-  ['Poker', '🃏', 'Karten & Strategie', 'Rundenbasiertes Kartenspiel mit Chips.'],
-  ['Duet', '⚪', 'Action', 'Zwei gekoppelte Punkte um Hindernisse steuern.'],
-  ['Fußball', '⚽', 'Sport & Action', 'Schnelle Tore auf dem Querformat-Feld.'],
-  ['Schlagenspiel', '🥊', 'Action', 'Reaktions- und Schlagduell lokal.'],
-  ['Fruchtspiel', '🍉', 'Puzzle', 'Gleiche Früchte zusammenführen bis zur größten Frucht.'],
-  ['Farbige Schrauben', '🔩', 'Puzzle', 'Schrauben nach Farben sortieren und lösen.'],
-  ['Labyrinth malen', '🌀', 'Puzzle', 'Weg durch das Labyrinth mit Farbspur ziehen.'],
-  ['Wer bin ich?', '❓', 'Partyspiele', 'Begriffe erraten mit Ja/Nein-Fragen.'],
-  ['Red car escape!', '🚗', 'Puzzle', 'Blockaden verschieben und das rote Auto befreien.'],
-  ['Ball run', '🏀', 'Action', 'Ball auf Strecke balancieren und Hindernissen ausweichen.'],
-  ['Flappy jump', '🐦', 'Action', 'Durch Lücken fliegen und Highscores jagen.'],
-  ['Tower war', '🏰', 'Strategie', 'Türme und Einheiten geschickt verteilen und erobern.'],
-  ['Solitaire', '♠️', 'Karten & Strategie', 'Kartenstapel nach Farbe und Wert sortieren.'],
-  ['Dame', '⚫', 'Brettspiele', 'Klassisches Brettspiel für 2 Spieler lokal.'],
-  ['Miaudoku (Kakuro/Sudoku-Stil)', '🐱', 'Puzzle', 'Logikrätsel im vertrauten Katzen-/Kacheldesign.'],
-  ['Herzen', '♥️', 'Karten & Strategie', 'Stiche vermeiden – besonders Herz und Pik-Dame.'],
-  ['Mini Metro', '🚇', 'Strategie', 'Linien ziehen und Stationen rechtzeitig verbinden.'],
-  ['Balatro', '🃏', 'Karten & Strategie', 'Pokerhände mit Multiplikatoren und Jokern kombinieren.'],
-  ['Hotel manager', '🏨', 'Strategie', 'Zimmer verwalten, Gäste zufriedenstellen und ausbauen.'],
-  ['Rider', '🏍️', 'Action', 'Flips und Landungen auf Rampen meistern.'],
-  ['SRW2', '🚀', 'Action', 'Arcade-Rennen bzw. Action-Runde im Portal.'],
-  ['Tomb of the Mask', '🎭', 'Action', 'Rasantes Labyrinth-Dash bis zum Ausgang.'],
-  ['Color Slide', '🎨', 'Puzzle', 'Blöcke verschieben, bis Farben zusammenpassen.'],
-  ['Nonogram', '⬛', 'Puzzle', 'Zahlenhinweise nutzen, um das Pixelbild aufzudecken.'],
-  ['Ball Blast', '💥', 'Action', 'Fallende Zahlenblöcke mit Dauerfeuer zerlegen.'],
-  ['Epic Plane', '✈️', 'Action', 'Flugzeug aufrüsten und möglichst weit fliegen.'],
-  ['Merge', '✨', 'Puzzle', 'Gleiche Elemente zu höheren Stufen verschmelzen.'],
-  ['Brawl Stars (Arena-Modus)', '🔥', 'Action', 'Kompaktes Top-Down-Arena-Duell lokal.'],
-  ['Harvest.io', '🌾', 'Action', 'Ernte einsammeln und mit großem Anhänger ausweichen.'],
-  ['BTD 6 (Tower Defense)', '🎈', 'Strategie', 'Verteidigungstürme gegen Wellen platzieren.'],
-  ['Drill and Connect', '⛏️', 'Puzzle', 'Durch Gestein graben und Leitungen/Ziele verbinden.'],
-  ['Hay Day (Hof-Mini)', '🚜', 'Strategie', 'Felder bestellen, ernten und Vorräte verwalten.'],
-  ['Monument Valley', '🏛️', 'Puzzle', 'Optische Täuschungen und Wege geschickt drehen.'],
-  ['Slither.io', '🐍', 'Action', 'Wachsen und anderen ausweichen.'],
-  ['Hill Climb Racing', '🚙', 'Action', 'Hügel bezwingen und Sprit im Blick behalten.'],
-  ['Stealth Master', '🥷', 'Action', 'Unbemerkt durch Räume schleichen und Ziele ausschalten.'],
-  ['4 Bilder 1 Wort', '🖼️', 'Wörter & Quiz', 'Gemeinsamen Begriff aus vier Bildern finden.'],
-  ['Lines', '⚪', 'Puzzle', 'Fünf gleiche Kugeln in einer Reihe auflösen.'],
-  ['Mensch ärgere dich nicht', '🎲', 'Brettspiele', 'Klassiker für die Runde am Tisch.'],
-  ['Dobble', '👁️', 'Partyspiele', 'Gemeinsames Symbol zwischen zwei Karten blitzschnell finden.'],
-  ['Farbkampf', '🖌️', 'Action', 'Flächen in der eigenen Farbe einfärben.'],
-  ['Gravity Run', '🌌', 'Action', 'Schwerkraft umschalten und Hindernissen entgehen.'],
-  ['Chicken Jump', '🐔', 'Action', 'Plattformen nach oben erklimmen.'],
-  ['Frohe Vogel', '🐤', 'Action', 'Leichter Arcade-Flugmodus für zwischendurch.'],
-  ['Broken Tiles', '🧩', 'Puzzle', 'Zerbrochene Kacheln wieder zusammensetzen.'],
-  ['Minigolf', '⛳', 'Sport & Action', 'Winkel und Schlagkraft auf Parcours-Bahnen abstimmen.'],
-  ['Beach Ball', '🏖️', 'Action', 'Ball in der Luft halten und Punkte sammeln.'],
-  ['Subway Surfers (Lane-Runner)', '🏃', 'Action', 'Spuren wechseln, springen und ducken.'],
-  ['Idle Balls', '🔮', 'Simulation', 'Bälle rollen lassen und Upgrades freischalten.'],
-  ['Traffic Rider', '🛣️', 'Action', 'Durch den Verkehr schlängeln ohne Crash.'],
-  ['Rise Up! Ballon beschützen', '🎈', 'Action', 'Hindernisse mit dem Schild vom Ballon fernhalten.'],
-  ['Angry Birds (Schleuder)', '🐦', 'Action', 'Mit der Schleuder zielen und Ziele treffen.'],
-  ['Puzzle', '🧩', 'Puzzle', 'Klassisches Bildpuzzle zusammensetzen.'],
-  ['Bunte Formen einsetzen (Tangram-Bild)', '🔷', 'Puzzle', 'Bunte geometrische Formen passend in ein Bild einsetzen.']
-];
+    const wrap = $('div', 'sz-mp-wrap');
+    body.append(wrap);
 
-ROADMAP.forEach(([title, icon, cat, desc], idx) => {
-  registerGame({ id: `item-${idx + 1}`, title, icon, cat, desc });
+    const newTask = () => { a = 6 + R(14); b = 4 + R(12); showAns = false; };
+
+    const render = () => {
+      const players = getMultiplayerRoster(count);
+      saveGameProgress('blitz-rechnen-mp', { count, scores });
+      wrap.innerHTML = '';
+      wrap.append(buildPlayerCountSwitcher(count, (n) => { count = n; render(); }));
+
+      const board = $('div', 'sz-mp-board');
+      board.append(
+        $('div', 'sz-mp-active', `${a} + ${b} = ${showAns ? a + b : '?'}`),
+        $('div', 'sz-muted', 'Wer zuerst löst, bekommt den Punkt:')
+      );
+
+      const pRow = $('div', 'sz-mp-bar');
+      players.forEach((p) => {
+        const btn = $('button', 'sz-btn sz-btn-primary', `${p} (${scores[p] || 0})`);
+        btn.onclick = () => { scores[p] = (scores[p] || 0) + 1; newTask(); render(); };
+        pRow.append(btn);
+      });
+
+      const ctrlRow = $('div', 'sz-mp-bar');
+      const revBtn = $('button', 'sz-btn sz-btn-ghost', '👁 Ergebnis zeigen');
+      const nxtBtn = $('button', 'sz-btn sz-btn-lime', '↻ Neue Aufgabe');
+      revBtn.onclick = () => { showAns = true; render(); };
+      nxtBtn.onclick = () => { newTask(); render(); };
+      ctrlRow.append(revBtn, nxtBtn);
+
+      board.append(pRow, ctrlRow);
+      wrap.append(board);
+      status.textContent = `Blitz-Rechnen für ${players.length} Spieler (Punkte gespeichert)`;
+    };
+
+    render();
+  }
 });
 
-Shell.init();
+registerGame({
+  id: 'luegen-oder-wahrheit-mp',
+  title: 'Lügen oder Wahrheit? (2–4P)',
+  icon: '🤥',
+  cat: 'Partyspiele',
+  desc: 'Für 2, 3 oder 4 Spieler: Der aktive Spieler stellt eine Behauptung auf – wer täuscht oder durchschaut, punktet.',
+  run({ body, status }) {
+    const saved = loadGameProgress('luegen-oder-wahrheit-mp', { count: 4, scores: {}, turn: 0 });
+    let count = saved.count || 4;
+    let scores = typeof saved.scores === 'object' && saved.scores ? { ...saved.scores } : {};
+    let turn = saved.turn || 0;
+
+    const wrap = $('div', 'sz-mp-wrap');
+    body.append(wrap);
+
+    const render = () => {
+      const players = getMultiplayerRoster(count);
+      const speaker = players[turn % players.length];
+      saveGameProgress('luegen-oder-wahrheit-mp', { count, scores, turn });
+      wrap.innerHTML = '';
+      wrap.append(buildPlayerCountSwitcher(count, (n) => { count = n; turn = 0; render(); }));
+
+      const board = $('div', 'sz-mp-board');
+      board.append(
+        $('div', 'sz-mp-active', `${speaker} stellt eine Behauptung auf`),
+        $('div', 'sz-muted', 'Punkte für Täuschung oder Durchschauen vergeben:')
+      );
+
+      const row = $('div', 'sz-mp-bar');
+      const fooledBtn = $('button', 'sz-btn sz-btn-lime', `🎭 ${speaker} täuscht alle (+1)`);
+      const caughtBtn = $('button', 'sz-btn sz-btn-primary', '🕵️ Gruppe durchschaut (+1 an alle anderen)');
+      const nextBtn = $('button', 'sz-btn sz-btn-ghost', '➡ Nächster Spieler');
+
+      fooledBtn.onclick = () => { scores[speaker] = (scores[speaker] || 0) + 1; turn = (turn + 1) % players.length; render(); };
+      caughtBtn.onclick = () => {
+        players.forEach((p) => { if (p !== speaker) scores[p] = (scores[p] || 0) + 1; });
+        turn = (turn + 1) % players.length;
+        render();
+      };
+      nextBtn.onclick = () => { turn = (turn + 1) % players.length; render(); };
+
+      row.append(fooledBtn, caughtBtn, nextBtn);
+      board.append(row);
+
+      const pills = $('div', 'sz-mp-list');
+      players.forEach((p, i) => {
+        pills.append($('span', 'sz-mp-pill' + (i === turn % players.length ? ' cur' : ''), `${p}: ${scores[p] || 0}`));
+      });
+
+      wrap.append(board, pills);
+      status.textContent = `Runde mit ${players.length} Spielern · Sprecher: ${speaker}`;
+    };
+
+    render();
+  }
+});
+
+ROADMAP.forEach((item) => {
+  if (!GAMES.some((g) => g.id === item.id)) {
+    registerGame({
+      id: item.id,
+      title: item.title,
+      icon: item.icon || '🎮',
+      cat: item.cat || 'Arcade',
+      desc: item.desc || 'Lokal spielbares Modul im Spielezimmer.',
+      run({ status }) {
+        status.textContent = `${item.title} bereit.`;
+      }
+    });
+  }
+});
